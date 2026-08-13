@@ -7,8 +7,11 @@ param(
 $ErrorActionPreference = "Stop"
 
 $dist = Join-Path $PSScriptRoot "dist"
-Remove-Item $dist -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $dist | Out-Null
+# Clear the CONTENTS rather than the directory: a terminal sitting in dist\ (or a previous
+# tts-sst.exe still running) locks the directory itself, and that shouldn't fail a build.
+New-Item -ItemType Directory -Path $dist -Force | Out-Null
+try { Get-ChildItem $dist -Force | Remove-Item -Recurse -Force -ErrorAction Stop }
+catch { throw "Could not clear $dist — is tts-sst.exe still running? ($($_.Exception.Message))" }
 
 # -H windowsgui: no console window when launched from Explorer or at login. The tray icon is the UI.
 Write-Host "Building tts-sst.exe..."
