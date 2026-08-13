@@ -1,31 +1,57 @@
 # tts-sst
 
 Local speech-to-text and text-to-speech for Windows, served over the
-[Wyoming protocol](https://github.com/rhasspy/wyoming) on localhost — no Docker, no Python,
-no cloud. Built for [open-quake](https://github.com/TeeJS/open-quake)'s Claude Voice panel,
-usable by any Wyoming client (Home Assistant included).
+[Wyoming protocol](https://github.com/rhasspy/wyoming) on localhost — no Docker, no Python, no
+cloud, no account. Built for [open-quake](https://github.com/TeeJS/open-quake)'s Claude Voice
+panel; works with any Wyoming client, Home Assistant included.
 
-- **STT**: Whisper or Parakeet models via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — port 10300
-- **TTS**: Piper voices via sherpa-onnx — port 10200
-- Binds 127.0.0.1 only by default.
+- **Speech-to-text** on port **10300** — Whisper (via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx))
+- **Text-to-speech** on port **10200** — Piper voices, or the built-in Windows voice
+- Binds `127.0.0.1` only by default; ~11 MB download, models fetched on first run
+- Lives in the system tray: status, model/voice pickers, start-with-Windows
 
-## Status
+## Install
 
-Early development. Working today: Wyoming server, Piper-voice TTS, mock engines for protocol
-testing. Coming: STT models, first-run model download, tray app, installer.
+Download the latest `tts-sst-*-win-x64.zip`, unzip anywhere, run `tts-sst.exe`. A tray icon
+appears and the first run downloads the default models (a ~64 MB Piper voice, then a ~600 MB
+Whisper model) — the status line shows progress. Right-click the tray icon to switch models,
+pick the instant Windows built-in voice, or enable start-with-Windows.
 
-## Dev
+Clients connect to `127.0.0.1:10300` (STT) and `127.0.0.1:10200` (TTS). In open-quake's Claude
+Voice app those are the shipped defaults.
 
-Requires Go 1.22+ and a MinGW-w64 gcc on PATH (cgo). Build:
+## Voices and models
 
+| Pick | Notes |
+|---|---|
+| Piper (default) | Natural-sounding neural voice, ~64 MB, runs on CPU |
+| Windows built-in | The old SAPI voice. Robotic, but instant — no download at all |
+| Whisper small.en (default) | Best accuracy, ~600 MB |
+| Whisper base.en | Smaller and faster, less accurate |
+
+Everything runs on the CPU; no GPU required.
+
+## Settings
+
+`%APPDATA%\tts-sst\config.json` — bind address, ports, chosen model/voice, language, thread count.
+Models live in `%APPDATA%\tts-sst\models\`, the log in `%APPDATA%\tts-sst\tts-sst.log`.
+
+Flags override config for one run: `-console` (no tray), `-mock` (protocol testing, no models),
+`-no-download`, `-bind`, `-stt-port`, `-tts-port`, `-threads`, `-models`.
+
+## Build
+
+Needs Go 1.22+ and a MinGW-w64 gcc on PATH (cgo — build time only).
+
+```powershell
+.\build.ps1
 ```
-go build -o build/tts-sst.exe ./cmd/tts-sst
-```
 
-Copy `onnxruntime.dll`, `sherpa-onnx-c-api.dll`, `sherpa-onnx-cxx-api.dll` from
-`$(go env GOMODCACHE)/github.com/k2-fsa/sherpa-onnx-go-windows@*/lib/x86_64-pc-windows-gnu/`
-next to the exe.
+Produces `dist\` (exe + three sherpa-onnx DLLs) and a release zip. `go test ./...` covers the
+protocol framing, the model installer, and real SAPI synthesis; the engine tests need the DLLs on
+PATH (`$env:Path = "$PWD\dist;$env:Path"`).
 
-Models live in `%APPDATA%\tts-sst\models\` — e.g. extract
-[vits-piper-en_US-lessac-medium](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models)
-there and run `tts-sst.exe`. `-mock` serves tone/echo engines with no models for protocol tests.
+## License
+
+MIT. Bundles [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0) and downloads
+Piper/Whisper models published under their own licenses.
