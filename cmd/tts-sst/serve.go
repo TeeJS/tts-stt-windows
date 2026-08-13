@@ -167,6 +167,14 @@ func (s *service) transcribe(pcm []byte, f wyoming.AudioFormat, _ string) (strin
 	if err != nil {
 		return "", err
 	}
+	// Drop what the model wrote about sounds rather than speech — "(clicking)", "[BLANK_AUDIO]",
+	// stock phrases hallucinated on near-silence. Without this a keyboard click becomes a turn.
+	if s.cfg.FilterNonSpeech {
+		if clean := engine.CleanTranscript(text); clean != text {
+			log.Printf("filtered non-speech: %q -> %q", text, clean)
+			text = clean
+		}
+	}
 	return text, nil
 }
 
@@ -290,6 +298,12 @@ func (s *service) SetSpeed(speed float32) {
 // SetLanguage persists the user's language; it drives multi-language model hints and default picks.
 func (s *service) SetLanguage(lang string) {
 	s.cfg.Language = lang
+	config.Save(s.cfg)
+}
+
+// SetFilterNonSpeech turns the "(clicking)" / "[BLANK_AUDIO]" filter on or off.
+func (s *service) SetFilterNonSpeech(on bool) {
+	s.cfg.FilterNonSpeech = on
 	config.Save(s.cfg)
 }
 

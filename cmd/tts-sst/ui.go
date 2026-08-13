@@ -120,16 +120,17 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, map[string]any{
-		"status":    svc.Status(),
-		"busy":      svc.Busy(),
-		"language":  svc.cfg.Language,
-		"speed":     svc.cfg.Speed,
-		"setup":     svc.cfg.Setup,
-		"activeTTS": svc.ActiveTTS(),
-		"activeSTT": svc.ActiveSTT(),
-		"languages": models.Languages(),
-		"models":    out,
-		"ports":     map[string]int{"stt": svc.cfg.STTPort, "tts": svc.cfg.TTSPort},
+		"status":          svc.Status(),
+		"busy":            svc.Busy(),
+		"language":        svc.cfg.Language,
+		"speed":           svc.cfg.Speed,
+		"setup":           svc.cfg.Setup,
+		"filterNonSpeech": svc.cfg.FilterNonSpeech,
+		"activeTTS":       svc.ActiveTTS(),
+		"activeSTT":       svc.ActiveSTT(),
+		"languages":       models.Languages(),
+		"models":          out,
+		"ports":           map[string]int{"stt": svc.cfg.STTPort, "tts": svc.cfg.TTSPort},
 	})
 }
 
@@ -191,9 +192,10 @@ func (u *uiServer) handleRemove(w http.ResponseWriter, r *http.Request) {
 // handleSettings applies the language and speaking-rate controls.
 func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Language string   `json:"language"`
-		Speed    *float32 `json:"speed"`
-		Setup    *bool    `json:"setup"`
+		Language        string   `json:"language"`
+		Speed           *float32 `json:"speed"`
+		Setup           *bool    `json:"setup"`
+		FilterNonSpeech *bool    `json:"filterNonSpeech"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -204,6 +206,9 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Speed != nil {
 		u.svc.SetSpeed(*body.Speed)
+	}
+	if body.FilterNonSpeech != nil {
+		u.svc.SetFilterNonSpeech(*body.FilterNonSpeech)
 	}
 	// Answering the first-run question is what releases the service to pick and download models —
 	// now for the language the user actually speaks.

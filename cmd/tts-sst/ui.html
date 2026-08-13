@@ -123,6 +123,12 @@
         <input type="range" id="speed" min="0.5" max="2" step="0.05" value="1">
       </div>
       <div class="row">
+        <label for="filterNS">Ignore non-speech sounds
+          <span class="hint">Speech models write things like <code>(clicking)</code> or <code>[BLANK_AUDIO]</code> when they hear noise instead of words. With this on, those are discarded rather than sent as if you had said them.</span>
+        </label>
+        <input type="checkbox" id="filterNS" style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="row">
         <label>Test the current voice<span class="hint" id="portsHint"></span></label>
         <button class="act" id="testBtn">▶ Play sample</button>
       </div>
@@ -267,6 +273,7 @@ function render() {
   $('#setLang').value = state.language;
   $('#speed').value = state.speed;
   $('#speedVal').textContent = Number(state.speed).toFixed(2).replace(/0$/,'') + '×';
+  $('#filterNS').checked = state.filterNonSpeech;
   $('#portsHint').textContent = `Serving speech on port ${state.ports.stt}, voice on port ${state.ports.tts}.`;
 
   if (!state.setup) {
@@ -298,6 +305,7 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b
 $('#setLang').onchange = async e => { await post('/api/settings', {language: e.target.value}); load(); };
 $('#speed').oninput = e => { $('#speedVal').textContent = Number(e.target.value).toFixed(2).replace(/0$/,'') + '×'; };
 $('#speed').onchange = async e => { await post('/api/settings', {speed: Number(e.target.value)}); };
+$('#filterNS').onchange = async e => { await post('/api/settings', {filterNonSpeech: e.target.checked}); };
 $('#testBtn').onclick = async () => {
   const btn = $('#testBtn');
   btn.disabled = true; btn.textContent = 'Speaking…';

@@ -18,10 +18,13 @@ type Config struct {
 	Speed    float32 `json:"speed"`    // voice speaking rate, 1.0 = natural
 	Threads  int     `json:"threads"`  // 0 = auto
 	Setup    bool    `json:"setup"`    // true once the first-run language choice has been made
+	// FilterNonSpeech drops transcripts that are only a model's description of a sound —
+	// "(clicking)", "[BLANK_AUDIO]" — instead of passing them on as if they were spoken.
+	FilterNonSpeech bool `json:"filterNonSpeech"`
 }
 
 func Defaults() Config {
-	return Config{Bind: "127.0.0.1", STTPort: 10300, TTSPort: 10200, Language: "en", Speed: 1.0}
+	return Config{Bind: "127.0.0.1", STTPort: 10300, TTSPort: 10200, Language: "en", Speed: 1.0, FilterNonSpeech: true}
 }
 
 // Dir is the app's data directory (%APPDATA%\tts-sst), created on demand.
