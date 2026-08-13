@@ -205,9 +205,10 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if body.Speed != nil {
 		u.svc.SetSpeed(*body.Speed)
 	}
-	if body.Setup != nil && *body.Setup {
-		u.svc.cfg.Setup = true
-		u.svc.SetLanguage(u.svc.cfg.Language) // one save covers both fields
+	// Answering the first-run question is what releases the service to pick and download models —
+	// now for the language the user actually speaks.
+	if body.Setup != nil && *body.Setup && !u.svc.cfg.Setup {
+		u.svc.CompleteSetup()
 	}
 	writeJSON(w, map[string]any{"ok": true})
 }

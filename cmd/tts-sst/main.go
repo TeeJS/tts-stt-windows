@@ -15,6 +15,7 @@ import (
 
 	"github.com/TeeJS/tts-stt-windows/internal/config"
 	"github.com/TeeJS/tts-stt-windows/internal/engine"
+	"github.com/TeeJS/tts-stt-windows/internal/models"
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
 )
 
@@ -34,6 +35,18 @@ func main() {
 	setupLogging()
 
 	cfg := config.Load()
+	if !cfg.Setup {
+		// Seed the first-run question with the Windows display language, so most users can accept
+		// the default instead of hunting through fifty options — and nobody has English assumed
+		// for them. Only languages we actually have a voice for are worth pre-selecting.
+		if sys := config.SystemLanguage(); sys != "" {
+			if v, _ := models.DefaultsFor(sys); v.ID != "" {
+				cfg.Language = sys
+			} else {
+				log.Printf("no voice available for the system language %q; first-run question defaults to English", sys)
+			}
+		}
+	}
 	if *bind != "" {
 		cfg.Bind = *bind
 	}

@@ -133,8 +133,9 @@
 <div id="setup" class="hidden">
   <div id="setupCard">
     <h2>What language do you speak?</h2>
-    <p>tts-sst will download a voice and a speech model that fit. You can change this any time, and add more languages later.</p>
+    <p>tts-sst will download a voice and a speech model that fit. You can change this any time, add more languages later, or pick different models yourself.</p>
     <select id="setupLang"></select>
+    <p id="setupPlan"></p>
     <button class="act primary" id="setupGo">Get started</button>
   </div>
 </div>
@@ -271,8 +272,24 @@ function render() {
   if (!state.setup) {
     langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
     $('#setupLang').value = state.language;
+    setupPlan();
     $('#setup').classList.remove('hidden');
   }
+}
+
+// Spell out what "Get started" will actually download, so nobody is surprised by a 500MB fetch.
+function setupPlan() {
+  const lang = $('#setupLang').value;
+  const forLang = kind => state.models
+    .filter(m => m.kind === kind && m.id !== 'windows-builtin' && (m.langs.includes(lang) || m.langs.includes('multi')));
+  const pickVoice = forLang('tts').filter(m => m.quality === 'medium').sort((a,b) => a.size - b.size)[0]
+                 || forLang('tts').sort((a,b) => a.size - b.size)[0];
+  const pickSTT = forLang('stt').find(m => m.id === 'parakeet-tdt-0.6b-v3')
+               || forLang('stt').sort((a,b) => a.size - b.size)[0];
+  const mb = m => m ? Math.round(m.size / 1048576) + ' MB' : '';
+  $('#setupPlan').textContent = pickVoice && pickSTT
+    ? `Will download: ${pickVoice.name} voice (${mb(pickVoice)}) and ${pickSTT.name} (${mb(pickSTT)}).`
+    : 'No models are available for that language yet.';
 }
 
 // ---- events ----
@@ -294,6 +311,7 @@ $('#testBtn').onclick = async () => {
     alert(e.message); btn.disabled = false; btn.textContent = '▶ Play sample';
   }
 };
+$('#setupLang').onchange = setupPlan;
 $('#setupGo').onclick = async () => {
   await post('/api/settings', {language: $('#setupLang').value, setup: true});
   $('#setup').classList.add('hidden');

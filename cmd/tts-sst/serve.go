@@ -91,7 +91,15 @@ func label(id string) string {
 
 // Start loads the configured engines (downloading them if needed) and brings the listeners up.
 // Runs in its own goroutine; progress lands in the status line.
+//
+// On a first run it does nothing until the language question is answered: downloading an English
+// voice and then a second one for the user's actual language would waste hundreds of megabytes
+// and minutes of their time.
 func (s *service) Start() {
+	if !s.cfg.Setup {
+		s.setStatus("Waiting — choose your language in Settings")
+		return
+	}
 	go func() {
 		// Fall back to language defaults when nothing is configured yet, and equally when the
 		// configured id is no longer in the catalog — ids change when the catalog is regenerated,
@@ -283,6 +291,14 @@ func (s *service) SetSpeed(speed float32) {
 func (s *service) SetLanguage(lang string) {
 	s.cfg.Language = lang
 	config.Save(s.cfg)
+}
+
+// CompleteSetup marks the first-run question answered and starts loading models for the language
+// that was chosen.
+func (s *service) CompleteSetup() {
+	s.cfg.Setup = true
+	config.Save(s.cfg)
+	s.Start()
 }
 
 func (s *service) ensure(m models.Model) error {
