@@ -24,7 +24,7 @@ func runTray(svc *service, ui *uiServer) {
 		status.Disable()
 		systray.AddSeparator()
 
-		settings := systray.AddMenuItem("Settings & models…", "Choose voices and speech models")
+		settings := systray.AddMenuItem("Settings", "Choose voices and speech models")
 		autostart := systray.AddMenuItemCheckbox("Start with Windows", "Run tts-sst at login", autostartEnabled())
 		openModels := systray.AddMenuItem("Open models folder", "")
 		openLog := systray.AddMenuItem("Open log", "")

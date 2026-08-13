@@ -117,6 +117,12 @@
         <select id="setLang"></select>
       </div>
       <div class="row">
+        <label>Set up again
+          <span class="hint">Re-asks the language question shown on first launch, and picks a matching voice and speech model.</span>
+        </label>
+        <button class="act" id="rerunSetup">Choose language &amp; models</button>
+      </div>
+      <div class="row">
         <label for="speed">Speaking rate
           <span class="hint">How fast the voice talks. <span id="speedVal">1.0×</span></span>
         </label>
@@ -141,8 +147,13 @@
     <h2>What language do you speak?</h2>
     <p>tts-sst will download a voice and a speech model that fit. You can change this any time, add more languages later, or pick different models yourself.</p>
     <select id="setupLang"></select>
+    <label class="hint" for="setupVoice">Voice</label>
+    <select id="setupVoice"></select>
     <p id="setupPlan"></p>
-    <button class="act primary" id="setupGo">Get started</button>
+    <div style="display:flex;gap:10px">
+      <button class="act primary" id="setupGo">Get started</button>
+      <button class="act" id="setupCancel" hidden>Cancel</button>
+    </div>
   </div>
 </div>
 
@@ -279,23 +290,39 @@ function render() {
   if (!state.setup) {
     langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
     $('#setupLang').value = state.language;
-    setupPlan();
+    setupVoices();
     $('#setup').classList.remove('hidden');
   }
+}
+
+// Offer the actual voices for the chosen language — including its regional accents, so someone
+// who wants en-GB rather than en-US picks it here instead of discovering the difference later.
+function setupVoices() {
+  const lang = $('#setupLang').value;
+  const voices = state.models
+    .filter(m => m.kind === 'tts' && m.id !== 'windows-builtin' && m.langs.includes(lang))
+    .sort((a, b) => (a.region || '').localeCompare(b.region || '') || a.name.localeCompare(b.name));
+  const sel = $('#setupVoice');
+  sel.innerHTML = voices.map(m => {
+    const bits = [m.region && `${langLabel(lang)} (${m.region})`, m.quality, Math.round(m.size / 1048576) + ' MB']
+      .filter(Boolean).join(' · ');
+    return `<option value="${m.id}">${m.name} — ${bits}</option>`;
+  }).join('') || '<option value="">No voices for this language yet</option>';
+  // Default to a medium-quality voice: low is noticeably worse, high costs far more CPU per word.
+  const preferred = voices.find(m => m.quality === 'medium') || voices[0];
+  if (preferred) sel.value = preferred.id;
+  setupPlan();
 }
 
 // Spell out what "Get started" will actually download, so nobody is surprised by a 500MB fetch.
 function setupPlan() {
   const lang = $('#setupLang').value;
-  const forLang = kind => state.models
-    .filter(m => m.kind === kind && m.id !== 'windows-builtin' && (m.langs.includes(lang) || m.langs.includes('multi')));
-  const pickVoice = forLang('tts').filter(m => m.quality === 'medium').sort((a,b) => a.size - b.size)[0]
-                 || forLang('tts').sort((a,b) => a.size - b.size)[0];
-  const pickSTT = forLang('stt').find(m => m.id === 'parakeet-tdt-0.6b-v3')
-               || forLang('stt').sort((a,b) => a.size - b.size)[0];
+  const voice = state.models.find(m => m.id === $('#setupVoice').value);
+  const forSTT = state.models.filter(m => m.kind === 'stt' && (m.langs.includes(lang) || m.langs.includes('multi')));
+  const pickSTT = forSTT.find(m => m.id === 'parakeet-tdt-0.6b-v3') || forSTT.sort((a,b) => a.size - b.size)[0];
   const mb = m => m ? Math.round(m.size / 1048576) + ' MB' : '';
-  $('#setupPlan').textContent = pickVoice && pickSTT
-    ? `Will download: ${pickVoice.name} voice (${mb(pickVoice)}) and ${pickSTT.name} (${mb(pickSTT)}).`
+  $('#setupPlan').textContent = voice && pickSTT
+    ? `Will download ${mb(voice)} for the voice and ${pickSTT.name} (${mb(pickSTT)}) for speech recognition.`
     : 'No models are available for that language yet.';
 }
 
@@ -319,10 +346,24 @@ $('#testBtn').onclick = async () => {
     alert(e.message); btn.disabled = false; btn.textContent = '▶ Play sample';
   }
 };
-$('#setupLang').onchange = setupPlan;
+// Re-open the first-run question on demand. It only changes anything once "Get started" is
+// pressed, so opening it is safe — Cancel leaves the current voice and model alone.
+$('#rerunSetup').onclick = () => {
+  langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
+  $('#setupLang').value = state.language;
+  setupPlan();
+  $('#setupCancel').hidden = false;
+  $('#setup').classList.remove('hidden');
+};
+$('#setupCancel').onclick = () => $('#setup').classList.add('hidden');
+$('#setupLang').onchange = setupVoices;
+$('#setupVoice').onchange = setupPlan;
 $('#setupGo').onclick = async () => {
-  await post('/api/settings', {language: $('#setupLang').value, setup: true});
+  const btn = $('#setupGo');
+  btn.disabled = true; btn.textContent = 'Starting…';
+  await post('/api/settings', {language: $('#setupLang').value, voice: $('#setupVoice').value, setup: true});
   $('#setup').classList.add('hidden');
+  btn.disabled = false; btn.textContent = 'Get started';
   load();
 };
 

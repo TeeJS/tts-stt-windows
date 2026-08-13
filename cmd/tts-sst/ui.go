@@ -193,6 +193,7 @@ func (u *uiServer) handleRemove(w http.ResponseWriter, r *http.Request) {
 func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Language        string   `json:"language"`
+		Voice           string   `json:"voice"` // chosen in the setup card; "" = pick a default
 		Speed           *float32 `json:"speed"`
 		Setup           *bool    `json:"setup"`
 		FilterNonSpeech *bool    `json:"filterNonSpeech"`
@@ -210,10 +211,10 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if body.FilterNonSpeech != nil {
 		u.svc.SetFilterNonSpeech(*body.FilterNonSpeech)
 	}
-	// Answering the first-run question is what releases the service to pick and download models —
-	// now for the language the user actually speaks.
-	if body.Setup != nil && *body.Setup && !u.svc.cfg.Setup {
-		u.svc.CompleteSetup()
+	// Answering the language question releases the service to pick and download models for the
+	// language the user actually speaks — on first run, and again whenever they re-run it.
+	if body.Setup != nil && *body.Setup {
+		u.svc.CompleteSetup(body.Voice)
 	}
 	writeJSON(w, map[string]any{"ok": true})
 }

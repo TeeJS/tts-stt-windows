@@ -307,10 +307,13 @@ func (s *service) SetFilterNonSpeech(on bool) {
 	config.Save(s.cfg)
 }
 
-// CompleteSetup marks the first-run question answered and starts loading models for the language
-// that was chosen.
-func (s *service) CompleteSetup() {
+// CompleteSetup answers the language question — on first launch, or again later from Settings —
+// and loads a voice and speech model for the chosen language. Clearing the current picks is what
+// makes a re-run meaningful: otherwise it would keep the models chosen for the old language.
+func (s *service) CompleteSetup(voice string) {
 	s.cfg.Setup = true
+	s.cfg.TTSVoice = voice // "" leaves Start to pick a default for the language
+	s.cfg.STTModel = ""
 	config.Save(s.cfg)
 	s.Start()
 }
