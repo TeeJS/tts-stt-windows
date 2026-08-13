@@ -14,20 +14,22 @@ import (
 	"runtime"
 
 	"github.com/TeeJS/tts-stt-windows/internal/engine"
+	"github.com/TeeJS/tts-stt-windows/internal/models"
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
 )
 
 func main() {
 	var (
-		bind     = flag.String("bind", "127.0.0.1", "address to bind (loopback only by default; do not expose without understanding the risk)")
-		sttPort  = flag.Int("stt-port", 10300, "Wyoming ASR (speech-to-text) port")
-		ttsPort  = flag.Int("tts-port", 10200, "Wyoming TTS (text-to-speech) port")
-		models   = flag.String("models", defaultModelsDir(), "models directory")
-		sttModel = flag.String("stt-model", "", "STT model directory name under --models (auto-detects sherpa-onnx-* when empty)")
-		ttsVoice = flag.String("tts-voice", "", "TTS voice directory name under --models (auto-detects vits-piper-* when empty)")
-		language = flag.String("language", "en", "STT language hint (whisper models)")
-		threads  = flag.Int("threads", 0, "inference threads per engine (0 = auto: physical-ish cores, capped at 8)")
-		mock     = flag.Bool("mock", false, "serve mock engines (no models needed) for protocol testing")
+		bind       = flag.String("bind", "127.0.0.1", "address to bind (loopback only by default; do not expose without understanding the risk)")
+		sttPort    = flag.Int("stt-port", 10300, "Wyoming ASR (speech-to-text) port")
+		ttsPort    = flag.Int("tts-port", 10200, "Wyoming TTS (text-to-speech) port")
+		modelsDir  = flag.String("models", defaultModelsDir(), "models directory")
+		sttModel   = flag.String("stt-model", "", "STT model directory name under --models (auto-detects sherpa-onnx-* when empty)")
+		ttsVoice   = flag.String("tts-voice", "", "TTS voice directory name under --models (auto-detects vits-piper-* when empty)")
+		language   = flag.String("language", "en", "STT language hint (whisper models)")
+		threads    = flag.Int("threads", 0, "inference threads per engine (0 = auto: physical-ish cores, capped at 8)")
+		mock       = flag.Bool("mock", false, "serve mock engines (no models needed) for protocol testing")
+		noDownload = flag.Bool("no-download", false, "never download models; fail if they're missing")
 	)
 	flag.Parse()
 	log.SetFlags(log.Ltime)
@@ -53,7 +55,17 @@ func main() {
 		stt, tts = mockSTT, mockTTS
 		sttName, ttsName = "mock", "mock"
 	} else {
-		if dir := resolveModelDir(*models, *sttModel, []string{"sherpa-onnx-*", "*whisper*", "*parakeet*"}); dir != "" {
+		// First run: fetch the default models (one piper voice + one whisper model). Progress goes
+		// to the log; the tray shell will surface the same callback in its menu later.
+		if !*noDownload {
+			err := models.EnsureDefaults(*modelsDir, func(name string, done, total int64) {
+				log.Printf("downloading %s: %d%% (%d/%d MB)", name, done*100/total, done>>20, total>>20)
+			})
+			if err != nil {
+				log.Fatalf("model download failed: %v", err)
+			}
+		}
+		if dir := resolveModelDir(*modelsDir, *sttModel, []string{"sherpa-onnx-*", "*whisper*", "*parakeet*"}); dir != "" {
 			rec, err := loadSTT(dir, *language, *threads)
 			if err != nil {
 				log.Fatalf("STT model load failed: %v", err)
@@ -63,7 +75,7 @@ func main() {
 			}
 			sttName = filepath.Base(dir)
 		}
-		if dir := resolveModelDir(*models, *ttsVoice, []string{"vits-piper-*", "vits-*"}); dir != "" {
+		if dir := resolveModelDir(*modelsDir, *ttsVoice, []string{"vits-piper-*", "vits-*"}); dir != "" {
 			voice, err := engine.NewPiperTTS(dir, *threads)
 			if err != nil {
 				log.Fatalf("TTS voice load failed: %v", err)
@@ -76,7 +88,7 @@ func main() {
 		}
 		if stt == nil && tts == nil {
 			log.Fatalf("no models found under %s (and --mock not set).\n"+
-				"Expected: a vits-piper-* voice directory and/or a sherpa-onnx-* STT model directory.", *models)
+				"Expected: a vits-piper-* voice directory and/or a sherpa-onnx-* STT model directory.", *modelsDir)
 		}
 	}
 
