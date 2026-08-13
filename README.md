@@ -2,12 +2,11 @@
 
 Local speech-to-text and text-to-speech for Windows, served over the
 [Wyoming protocol](https://github.com/rhasspy/wyoming) on localhost — no Docker, no Python, no
-cloud, no account. Built for [open-quake](https://github.com/TeeJS/open-quake)'s Claude Voice
-panel; works with any Wyoming client, Home Assistant included.
+cloud, no account. Works with any Wyoming client, Home Assistant included.
 
 - **Speech-to-text** on port **10300** — Whisper, Parakeet, SenseVoice, Moonshine or Dolphin
 - **Text-to-speech** on port **10200** — 200+ Piper and Coqui voices, or the built-in Windows voice
-- **53 languages**, not just English
+- **53 languages**
 - Binds `127.0.0.1` only by default; ~11 MB download, models fetched on demand
 - Lives in the system tray; models are chosen in a settings page
 
@@ -18,8 +17,7 @@ appears and the settings page opens to ask which language you speak — pre-sele
 Windows display language — then downloads a voice and a speech model that fit. Nothing is
 downloaded before you answer.
 
-Clients connect to `127.0.0.1:10300` (STT) and `127.0.0.1:10200` (TTS). In open-quake's Claude
-Voice app those are the shipped defaults.
+Clients connect to `127.0.0.1:10300` (STT) and `127.0.0.1:10200` (TTS).
 
 ## Voices and models
 
