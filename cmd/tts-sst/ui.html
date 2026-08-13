@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tts-sst settings</title>
+<style>
+  /* Dark by default, following the system where it's set to light. Single self-contained page:
+     no fonts, images or scripts are fetched, so it works with no internet at all. */
+  :root {
+    --bg:#15171c; --panel:#1c1f26; --panel2:#22262f; --line:#2e333d;
+    --fg:#e8ecf3; --dim:#9aa4b4; --accent:#7cffb2; --accent-fg:#04120b; --danger:#ff6b6b;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f4f6f9; --panel:#fff; --panel2:#eef1f5; --line:#dbe1e9;
+            --fg:#151a21; --dim:#5b6675; --accent:#0a7f4f; --accent-fg:#fff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 "Segoe UI", system-ui, sans-serif; }
+  #wrap { display:flex; min-height:100vh; }
+
+  nav { flex:0 0 210px; background:var(--panel); border-right:1px solid var(--line); padding:20px 0; }
+  nav h1 { font-size:19px; margin:0 20px 20px; letter-spacing:.02em; }
+  nav h1 span { color:var(--accent); }
+  nav button { display:block; width:100%; text-align:left; padding:11px 20px; border:0; background:none;
+    color:var(--dim); font:inherit; cursor:pointer; border-left:3px solid transparent; }
+  nav button:hover { color:var(--fg); }
+  nav button.on { color:var(--fg); background:var(--panel2); border-left-color:var(--accent); font-weight:600; }
+  #navStatus { margin:22px 20px 0; padding-top:16px; border-top:1px solid var(--line);
+    font-size:12.5px; color:var(--dim); word-wrap:break-word; }
+
+  main { flex:1; min-width:0; padding:26px 30px 40px; }
+  h2 { margin:0 0 4px; font-size:21px; }
+  .sub { color:var(--dim); margin:0 0 20px; font-size:13.5px; }
+
+  .toolbar { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+  input[type=search], select {
+    background:var(--panel); color:var(--fg); border:1px solid var(--line);
+    border-radius:8px; padding:9px 12px; font:inherit; min-width:0;
+  }
+  input[type=search] { flex:1; min-width:180px; }
+  input:focus, select:focus, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+  .group { margin:22px 0 10px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
+  .card { display:flex; align-items:center; gap:14px; background:var(--panel); border:1px solid var(--line);
+    border-radius:11px; padding:13px 16px; margin-bottom:9px; }
+  .card.active { border-color:var(--accent); }
+  .card .info { flex:1; min-width:0; }
+  .card .title { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+  .card .name { font-weight:600; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:99px; background:var(--panel2); color:var(--dim); }
+  .badge.on { background:var(--accent); color:var(--accent-fg); font-weight:700; }
+  .card .meta { color:var(--dim); font-size:12.5px; margin-top:2px; }
+  .card .actions { display:flex; gap:8px; align-items:center; flex:0 0 auto; }
+
+  button.act { border:1px solid var(--line); background:var(--panel2); color:var(--fg);
+    border-radius:8px; padding:8px 15px; font:inherit; cursor:pointer; white-space:nowrap; }
+  button.act:hover { border-color:var(--accent); }
+  button.act.primary { background:var(--accent); color:var(--accent-fg); border-color:transparent; font-weight:600; }
+  button.act.link { background:none; border-color:transparent; color:var(--dim); padding:8px 10px; }
+  button.act.link:hover { color:var(--danger); }
+  button.act:disabled { opacity:.5; cursor:default; }
+
+  .empty { color:var(--dim); padding:30px 0; text-align:center; }
+  .row { display:flex; align-items:center; gap:14px; background:var(--panel); border:1px solid var(--line);
+    border-radius:11px; padding:15px 16px; margin-bottom:10px; }
+  .row label { flex:1; }
+  .row .hint { display:block; color:var(--dim); font-size:12.5px; margin-top:2px; }
+  input[type=range] { width:190px; accent-color:var(--accent); }
+  code { background:var(--panel2); padding:2px 6px; border-radius:5px; font-size:13px; }
+
+  /* First-run overlay: one question, asked instead of assuming the user speaks English. */
+  #setup { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:20px; }
+  #setup.hidden { display:none; }
+  #setupCard { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px 28px; max-width:440px; }
+  #setupCard h2 { margin-bottom:8px; }
+  #setupCard p { color:var(--dim); font-size:13.5px; }
+  #setupCard select { width:100%; margin:14px 0 18px; padding:11px 12px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <nav>
+    <h1>tts<span>·</span>sst</h1>
+    <button data-tab="voices" class="on">Voices</button>
+    <button data-tab="speech">Speech recognition</button>
+    <button data-tab="settings">Settings</button>
+    <div id="navStatus">Loading…</div>
+  </nav>
+  <main>
+    <div id="tab-voices">
+      <h2>Voices</h2>
+      <p class="sub">The voice that reads replies aloud. Downloaded voices work offline, forever.</p>
+      <div class="toolbar">
+        <input type="search" id="q-voices" placeholder="Search voices…">
+        <select id="lang-voices"></select>
+      </div>
+      <div id="list-voices"></div>
+    </div>
+
+    <div id="tab-speech" hidden>
+      <h2>Speech recognition</h2>
+      <p class="sub">The model that turns what you say into text. Larger models are more accurate but slower.</p>
+      <div class="toolbar">
+        <input type="search" id="q-speech" placeholder="Search models…">
+        <select id="lang-speech"></select>
+      </div>
+      <div id="list-speech"></div>
+    </div>
+
+    <div id="tab-settings" hidden>
+      <h2>Settings</h2>
+      <p class="sub">Applies immediately; stored in <code>%APPDATA%\tts-sst\config.json</code>.</p>
+      <div class="row">
+        <label for="setLang">My language
+          <span class="hint">Used to pick sensible defaults, and told to multi-language models.</span>
+        </label>
+        <select id="setLang"></select>
+      </div>
+      <div class="row">
+        <label for="speed">Speaking rate
+          <span class="hint">How fast the voice talks. <span id="speedVal">1.0×</span></span>
+        </label>
+        <input type="range" id="speed" min="0.5" max="2" step="0.05" value="1">
+      </div>
+      <div class="row">
+        <label>Test the current voice<span class="hint" id="portsHint"></span></label>
+        <button class="act" id="testBtn">▶ Play sample</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="setup" class="hidden">
+  <div id="setupCard">
+    <h2>What language do you speak?</h2>
+    <p>tts-sst will download a voice and a speech model that fit. You can change this any time, and add more languages later.</p>
+    <select id="setupLang"></select>
+    <button class="act primary" id="setupGo">Get started</button>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let state = null, tab = 'voices', busyPoll = null;
+
+// ---- data ----
+async function load() {
+  state = await (await fetch('/api/state', {cache:'no-store'})).json();
+  render();
+  // While something is downloading or loading, poll fast enough to feel live.
+  clearInterval(busyPoll);
+  if (state.busy) busyPoll = setInterval(load, 700);
+}
+async function post(path, body) {
+  const r = await fetch(path, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{}),
+  });
+  if (!r.ok) alert(await r.text());
+  return r.ok;
+}
+
+// ---- rendering ----
+function langLabel(code) { return (state.languages && state.languages[code]) || code; }
+
+function langOptions(sel, models, includeAll) {
+  const codes = new Set();
+  models.forEach(m => m.langs.forEach(l => codes.add(l)));
+  const list = [...codes].sort((a,b) => a === 'multi' ? -1 : b === 'multi' ? 1 : langLabel(a).localeCompare(langLabel(b)));
+  const prev = sel.value;
+  sel.innerHTML = (includeAll ? '<option value="">All languages</option>' : '') +
+    list.map(c => `<option value="${c}">${langLabel(c)}</option>`).join('');
+  if (prev) sel.value = prev;
+}
+
+function card(m) {
+  const size = m.size ? (m.size >= 1073741824
+    ? (m.size/1073741824).toFixed(1) + ' GB'
+    : Math.round(m.size/1048576) + ' MB') : '';
+  const bits = [];
+  if (m.region) bits.push(langLabel(m.langs[0]) + ' (' + m.region + ')');
+  else bits.push(m.langs.map(langLabel).join(', '));
+  if (m.quality) bits.push(m.quality.replace('x_low','extra low'));
+  if (m.notes) bits.push(m.notes);
+  if (size) bits.push(size);
+
+  const el = document.createElement('div');
+  el.className = 'card' + (m.active ? ' active' : '');
+  el.innerHTML = `
+    <div class="info">
+      <div class="title">
+        <span class="name"></span>
+        ${m.active ? '<span class="badge on">Active</span>' : ''}
+        ${m.installed && !m.active && m.id !== 'windows-builtin' ? '<span class="badge">Downloaded</span>' : ''}
+      </div>
+      <div class="meta"></div>
+    </div>
+    <div class="actions"></div>`;
+  el.querySelector('.name').textContent = m.name;
+  el.querySelector('.meta').textContent = bits.join(' · ');
+
+  const actions = el.querySelector('.actions');
+  if (!m.active) {
+    const use = document.createElement('button');
+    use.className = 'act' + (m.installed ? ' primary' : '');
+    use.textContent = m.installed ? 'Use' : '↓ Download & use';
+    use.disabled = !!state.busy;
+    use.onclick = async () => { use.disabled = true; use.textContent = 'Starting…'; await post('/api/select', {id:m.id}); load(); };
+    actions.appendChild(use);
+  }
+  if (m.installed && !m.active && m.id !== 'windows-builtin') {
+    const del = document.createElement('button');
+    del.className = 'act link';
+    del.textContent = 'Delete';
+    del.onclick = async () => { if (confirm(`Delete ${m.name}?`)) { await post('/api/remove', {id:m.id}); load(); } };
+    actions.appendChild(del);
+  }
+  return el;
+}
+
+function renderList(kind, listEl, q, langSel) {
+  const all = state.models.filter(m => m.kind === kind);
+  langOptions(langSel, all, true);
+  const term = q.value.trim().toLowerCase();
+  const lang = langSel.value;
+  const match = all.filter(m => {
+    if (lang && !m.langs.includes(lang)) return false;
+    if (!term) return true;
+    return (m.name + ' ' + m.family + ' ' + m.langs.map(langLabel).join(' ') + ' ' + (m.region||'')).toLowerCase().includes(term);
+  });
+
+  // Group by language, not by model family: someone looking for a Bulgarian voice wants every
+  // Bulgarian option together, regardless of which project trained it. Multi-language models
+  // lead, since they serve everyone.
+  match.sort((a, b) => {
+    const am = a.langs[0] === 'multi', bm = b.langs[0] === 'multi';
+    if (am !== bm) return am ? -1 : 1;
+    const al = langLabel(a.langs[0]), bl = langLabel(b.langs[0]);
+    if (al !== bl) return al.localeCompare(bl);
+    return a.name.localeCompare(b.name) || (a.size - b.size);
+  });
+
+  listEl.innerHTML = '';
+  if (!match.length) { listEl.innerHTML = '<div class="empty">Nothing matches that search.</div>'; return; }
+  // Downloaded models first — the ones the user can switch to instantly.
+  const have = match.filter(m => m.installed), rest = match.filter(m => !m.installed);
+  const section = (title, items) => {
+    if (!items.length) return;
+    const h = document.createElement('div');
+    h.className = 'group'; h.textContent = title;
+    listEl.appendChild(h);
+    items.forEach(m => listEl.appendChild(card(m)));
+  };
+  section('On this computer', have);
+  section('Available to download', rest);
+}
+
+function render() {
+  $('#navStatus').textContent = state.busy || state.status;
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  ['voices','speech','settings'].forEach(t => $('#tab-'+t).hidden = t !== tab);
+
+  renderList('tts', $('#list-voices'), $('#q-voices'), $('#lang-voices'));
+  renderList('stt', $('#list-speech'), $('#q-speech'), $('#lang-speech'));
+
+  langOptions($('#setLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
+  $('#setLang').value = state.language;
+  $('#speed').value = state.speed;
+  $('#speedVal').textContent = Number(state.speed).toFixed(2).replace(/0$/,'') + '×';
+  $('#portsHint').textContent = `Serving speech on port ${state.ports.stt}, voice on port ${state.ports.tts}.`;
+
+  if (!state.setup) {
+    langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
+    $('#setupLang').value = state.language;
+    $('#setup').classList.remove('hidden');
+  }
+}
+
+// ---- events ----
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+['#q-voices','#lang-voices','#q-speech','#lang-speech'].forEach(s => $(s).oninput = render);
+$('#setLang').onchange = async e => { await post('/api/settings', {language: e.target.value}); load(); };
+$('#speed').oninput = e => { $('#speedVal').textContent = Number(e.target.value).toFixed(2).replace(/0$/,'') + '×'; };
+$('#speed').onchange = async e => { await post('/api/settings', {speed: Number(e.target.value)}); };
+$('#testBtn').onclick = async () => {
+  const btn = $('#testBtn');
+  btn.disabled = true; btn.textContent = 'Speaking…';
+  try {
+    const r = await fetch('/api/test', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    if (!r.ok) throw new Error(await r.text());
+    const audio = new Audio(URL.createObjectURL(await r.blob()));
+    audio.onended = () => { btn.disabled = false; btn.textContent = '▶ Play sample'; };
+    audio.play();
+  } catch (e) {
+    alert(e.message); btn.disabled = false; btn.textContent = '▶ Play sample';
+  }
+};
+$('#setupGo').onclick = async () => {
+  await post('/api/settings', {language: $('#setupLang').value, setup: true});
+  $('#setup').classList.add('hidden');
+  load();
+};
+
+load();
+setInterval(() => { if (!state || !state.busy) load(); }, 4000);
+</script>
+</body>
+</html>

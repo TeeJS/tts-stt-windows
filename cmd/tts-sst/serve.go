@@ -13,23 +13,27 @@ import (
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
 )
 
+// sapiVoiceID is the built-in Windows voice: not in the catalog (nothing to download) but
+// selectable like any other, and the only voice guaranteed to exist before any download.
+const sapiVoiceID = "windows-builtin"
+
 // service owns the engines and their Wyoming listeners, and supports live engine swaps from the
-// tray menu. The closures handed to ServeSTT/ServeTTS read the current engine through the mutex,
+// settings UI. The closures handed to ServeSTT/ServeTTS read the current engine through the mutex,
 // so a swap never requires touching the listeners.
 type service struct {
-	cfg       config.Config
-	modelsDir string
-	threads   int
-
+	cfg        config.Config
+	modelsDir  string
+	threads    int
 	noDownload bool
 
 	mu       sync.RWMutex
 	stt      *engine.Recognizer
 	tts      engine.TTS // *engine.PiperTTS or *engine.SapiTTS
-	sttName  string
-	ttsName  string
+	sttID    string
+	ttsID    string
 	status   string
-	onChange func() // tray refresh hook; nil in console mode
+	busy     string // non-empty while a download/load is in flight, for the UI
+	onChange func() // tray/UI refresh hook
 
 	listenOnce sync.Once
 }
@@ -39,69 +43,103 @@ func newService(cfg config.Config, modelsDir string, threads int) *service {
 }
 
 func (s *service) setStatus(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
 	s.mu.Lock()
-	s.status = fmt.Sprintf(format, args...)
+	s.status = msg
 	s.mu.Unlock()
-	log.Printf("status: %s", fmt.Sprintf(format, args...))
+	log.Printf("status: %s", msg)
 	if s.onChange != nil {
 		s.onChange()
 	}
 }
 
-func (s *service) Status() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.status
+func (s *service) Status() string    { s.mu.RLock(); defer s.mu.RUnlock(); return s.status }
+func (s *service) Busy() string      { s.mu.RLock(); defer s.mu.RUnlock(); return s.busy }
+func (s *service) ActiveSTT() string { s.mu.RLock(); defer s.mu.RUnlock(); return s.sttID }
+func (s *service) ActiveTTS() string { s.mu.RLock(); defer s.mu.RUnlock(); return s.ttsID }
+
+func (s *service) setBusy(what string) {
+	s.mu.Lock()
+	s.busy = what
+	s.mu.Unlock()
+	if s.onChange != nil {
+		s.onChange()
+	}
 }
 
-func (s *service) ActiveSTT() string { s.mu.RLock(); defer s.mu.RUnlock(); return s.sttName }
-func (s *service) ActiveTTS() string { s.mu.RLock(); defer s.mu.RUnlock(); return s.ttsName }
+// running composes the steady-state status line from whatever is actually loaded.
+func (s *service) running() {
+	voice, stt := s.ActiveTTS(), s.ActiveSTT()
+	s.setStatus("Running — %s · %s", label(stt), label(voice))
+}
 
-// Start downloads defaults if missing, loads both engines, and brings the listeners up.
+func label(id string) string {
+	if id == sapiVoiceID {
+		return "Windows built-in voice"
+	}
+	if m, ok := models.ByID(id); ok {
+		if m.Region != "" {
+			return m.Name + " (" + m.Region + ")"
+		}
+		return m.Name
+	}
+	if id == "" {
+		return "none"
+	}
+	return id
+}
+
+// Start loads the configured engines (downloading them if needed) and brings the listeners up.
 // Runs in its own goroutine; progress lands in the status line.
 func (s *service) Start() {
 	go func() {
-		if !s.noDownload {
-			prog := func(name string, done, total int64) {
-				s.setStatus("Downloading %s — %d%% of %d MB", name, done*100/total, total>>20)
-			}
-			if err := models.EnsureDefaults(s.modelsDir, prog); err != nil {
-				s.setStatus("Model download failed: %v", err)
-				return
-			}
-		}
-		sttPick, ttsPick := s.cfg.STTModel, s.cfg.TTSVoice
-		if sttPick == "" {
-			sttPick = "whisper-small-en"
-		}
-		if ttsPick == "" {
-			ttsPick = "piper-lessac-medium"
-		}
-		if err := s.useTTS(ttsPick); err != nil { // voice first: much faster load, speech works sooner
+		// Fall back to language defaults when nothing is configured yet, and equally when the
+		// configured id is no longer in the catalog — ids change when the catalog is regenerated,
+		// and an upgrade must not leave the user mute.
+		defVoice, defSTT := models.DefaultsFor(s.cfg.Language)
+		voiceID := s.resolve(s.cfg.TTSVoice, models.TTS, defVoice.ID)
+		sttID := s.resolve(s.cfg.STTModel, models.STT, defSTT.ID)
+		// Voice first: it loads in seconds where a speech model can take a minute to download,
+		// so the panel can talk back as early as possible.
+		if err := s.useTTS(voiceID); err != nil {
 			s.setStatus("Voice load failed: %v", err)
-			return
 		}
-		if err := s.useSTT(sttPick); err != nil {
-			s.setStatus("STT load failed: %v", err)
-			return
+		if err := s.useSTT(sttID); err != nil {
+			s.setStatus("Speech model load failed: %v", err)
 		}
 		s.listen()
-		s.setStatus("Running — STT %s · voice %s", s.ActiveSTT(), s.ActiveTTS())
+		s.running()
 	}()
+}
+
+// resolve returns id if it names something loadable, otherwise fallback. Keeps a stale or
+// hand-edited config from leaving the server with no voice or no speech model.
+func (s *service) resolve(id string, kind models.Kind, fallback string) string {
+	if id == "" {
+		return fallback
+	}
+	if kind == models.TTS && id == sapiVoiceID {
+		return id
+	}
+	if m, ok := models.ByID(id); ok && m.Kind == kind {
+		return id
+	}
+	log.Printf("configured %s %q is not in the catalog; falling back to %q", kind, id, fallback)
+	return fallback
 }
 
 // listen starts both Wyoming listeners exactly once.
 func (s *service) listen() {
 	s.listenOnce.Do(func() {
-		info := wyoming.BuildInfo(s.ActiveSTT(), s.ActiveTTS())
+		info := wyoming.BuildInfo(label(s.ActiveSTT()), label(s.ActiveTTS()))
 		sttL, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cfg.Bind, s.cfg.STTPort))
 		if err != nil {
-			s.setStatus("STT port %d busy: %v", s.cfg.STTPort, err)
+			s.setStatus("Speech port %d busy: %v", s.cfg.STTPort, err)
 			return
 		}
 		ttsL, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cfg.Bind, s.cfg.TTSPort))
 		if err != nil {
-			s.setStatus("TTS port %d busy: %v", s.cfg.TTSPort, err)
+			s.setStatus("Voice port %d busy: %v", s.cfg.TTSPort, err)
 			return
 		}
 		log.Printf("STT listening on %s, TTS listening on %s", sttL.Addr(), ttsL.Addr())
@@ -115,9 +153,13 @@ func (s *service) transcribe(pcm []byte, f wyoming.AudioFormat, _ string) (strin
 	rec := s.stt
 	s.mu.RUnlock()
 	if rec == nil {
-		return "", fmt.Errorf("no STT engine loaded")
+		return "", fmt.Errorf("no speech model loaded")
 	}
-	return rec.Transcribe(pcm, f.Rate)
+	text, err := rec.Transcribe(pcm, f.Rate)
+	if err != nil {
+		return "", err
+	}
+	return text, nil
 }
 
 func (s *service) synthesize(text string) ([]byte, wyoming.AudioFormat, error) {
@@ -125,98 +167,122 @@ func (s *service) synthesize(text string) ([]byte, wyoming.AudioFormat, error) {
 	voice := s.tts
 	s.mu.RUnlock()
 	if voice == nil {
-		return nil, wyoming.AudioFormat{}, fmt.Errorf("no TTS voice loaded")
+		return nil, wyoming.AudioFormat{}, fmt.Errorf("no voice loaded")
 	}
 	pcm, rate, err := voice.Synthesize(text)
 	return pcm, wyoming.AudioFormat{Rate: rate, Width: 2, Channels: 1}, err
 }
 
-// useSTT installs (downloading on demand) and activates the named registry STT model.
-func (s *service) useSTT(name string) error {
-	m, err := registryModel(name, models.STT)
-	if err != nil {
-		return err
+// useSTT installs (downloading on demand) and activates a speech model by catalog id.
+func (s *service) useSTT(id string) error {
+	if id == "" {
+		return fmt.Errorf("no speech model chosen")
+	}
+	m, ok := models.ByID(id)
+	if !ok || m.Kind != models.STT {
+		return fmt.Errorf("unknown speech model %q", id)
 	}
 	if err := s.ensure(m); err != nil {
 		return err
 	}
-	rec, err := loadSTT(filepath.Join(s.modelsDir, m.Dir), s.cfg.Language, s.threads)
+	s.setBusy("Loading " + m.Name + "…")
+	defer s.setBusy("")
+	rec, err := engine.NewSTT(filepath.Join(s.modelsDir, m.Dir), m.Family, sttLanguage(m, s.cfg.Language), s.threads)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	old := s.stt
-	s.stt, s.sttName = rec, m.Name
+	s.stt, s.sttID = rec, m.ID
 	s.mu.Unlock()
-	if old != nil {
-		go old.Close() // Close waits out any in-flight Transcribe before freeing
-	}
+	closeAsync(old) // Close waits out any in-flight Transcribe before freeing
 	return nil
 }
 
-// sapiVoiceName is the pseudo-registry entry for the built-in Windows fallback voice: not
-// downloadable, so it's never in models.Registry, but selectable from the same tray menu.
-const sapiVoiceName = "windows-builtin"
+// sttLanguage is the language hint passed to models that accept one. Multi-language models take
+// the user's language; single-language models must be left empty (their own language is baked in,
+// and a mismatched hint makes whisper translate instead of transcribe).
+func sttLanguage(m models.Model, userLang string) string {
+	for _, l := range m.Langs {
+		if l == "multi" {
+			return userLang
+		}
+	}
+	return ""
+}
 
-// useTTS activates the named voice — either a downloadable registry entry, or the SAPI fallback,
-// which needs no download and cannot fail to become available (Windows always has it).
-func (s *service) useTTS(name string) error {
+// useTTS activates a voice by catalog id, or the SAPI built-in, downloading if needed.
+func (s *service) useTTS(id string) error {
+	if id == "" {
+		return fmt.Errorf("no voice chosen")
+	}
 	var voice engine.TTS
-	if name == sapiVoiceName {
+	if id == sapiVoiceID {
 		voice = engine.NewSapiTTS()
 	} else {
-		m, err := registryModel(name, models.TTS)
-		if err != nil {
-			return err
+		m, ok := models.ByID(id)
+		if !ok || m.Kind != models.TTS {
+			return fmt.Errorf("unknown voice %q", id)
 		}
 		if err := s.ensure(m); err != nil {
 			return err
 		}
+		s.setBusy("Loading " + m.Name + "…")
+		defer s.setBusy("")
 		v, err := engine.NewPiperTTS(filepath.Join(s.modelsDir, m.Dir), s.threads)
 		if err != nil {
 			return err
 		}
+		v.SetSpeed(s.cfg.Speed)
 		voice = v
 	}
 	s.mu.Lock()
 	old := s.tts
-	s.tts, s.ttsName = voice, name
+	s.tts, s.ttsID = voice, id
 	s.mu.Unlock()
 	closeAsync(old)
 	return nil
 }
 
-// closer matches both engine.PiperTTS.Close and engine.SapiTTS.Close (neither is part of the
-// engine.TTS interface itself — SAPI's Close is a no-op, Piper's frees a C++ object).
-type closer interface{ Close() }
+// SwitchSTT / SwitchTTS are the UI entry points: swap engines, persist the pick.
+func (s *service) SwitchSTT(id string) error {
+	if err := s.useSTT(id); err != nil {
+		s.setStatus("Switch failed: %v", err)
+		return err
+	}
+	s.cfg.STTModel = id
+	config.Save(s.cfg)
+	s.running()
+	return nil
+}
 
-func closeAsync(v any) {
-	if c, ok := v.(closer); ok {
-		go c.Close()
+func (s *service) SwitchTTS(id string) error {
+	if err := s.useTTS(id); err != nil {
+		s.setStatus("Switch failed: %v", err)
+		return err
+	}
+	s.cfg.TTSVoice = id
+	config.Save(s.cfg)
+	s.running()
+	return nil
+}
+
+// SetSpeed persists and applies the speaking rate to the live voice.
+func (s *service) SetSpeed(speed float32) {
+	s.cfg.Speed = speed
+	config.Save(s.cfg)
+	s.mu.RLock()
+	v, ok := s.tts.(*engine.PiperTTS)
+	s.mu.RUnlock()
+	if ok {
+		v.SetSpeed(speed)
 	}
 }
 
-// SwitchSTT / SwitchTTS are the tray-menu entry points: swap engines, persist the pick.
-func (s *service) SwitchSTT(name string) {
-	s.setStatus("Loading %s…", name)
-	if err := s.useSTT(name); err != nil {
-		s.setStatus("Switch failed: %v", err)
-		return
-	}
-	s.cfg.STTModel = name
+// SetLanguage persists the user's language; it drives multi-language model hints and default picks.
+func (s *service) SetLanguage(lang string) {
+	s.cfg.Language = lang
 	config.Save(s.cfg)
-	s.setStatus("Running — STT %s · voice %s", s.ActiveSTT(), s.ActiveTTS())
-}
-
-func (s *service) SwitchTTS(name string) {
-	s.setStatus("Loading %s…", name)
-	if err := s.useTTS(name); err != nil {
-		s.setStatus("Switch failed: %v", err)
-		return
-	}
-	s.cfg.TTSVoice = name
-	config.Save(s.cfg)
-	s.setStatus("Running — STT %s · voice %s", s.ActiveSTT(), s.ActiveTTS())
 }
 
 func (s *service) ensure(m models.Model) error {
@@ -224,18 +290,31 @@ func (s *service) ensure(m models.Model) error {
 		return nil
 	}
 	if s.noDownload {
-		return fmt.Errorf("model %s not installed and downloads are disabled", m.Name)
+		return fmt.Errorf("%s is not installed and downloads are disabled", m.Name)
 	}
-	return models.Install(s.modelsDir, m, func(name string, done, total int64) {
-		s.setStatus("Downloading %s — %d%% of %d MB", name, done*100/total, total>>20)
+	s.setBusy("Downloading " + m.Name + "…")
+	defer s.setBusy("")
+	return models.Install(s.modelsDir, m, func(id string, done, total int64) {
+		s.setBusy(fmt.Sprintf("Downloading %s — %d%%", m.Name, pct(done, total)))
+		s.setStatus("Downloading %s — %d%% of %d MB", m.Name, pct(done, total), total>>20)
 	})
 }
 
-func registryModel(name string, kind models.Kind) (models.Model, error) {
-	for _, m := range models.Registry {
-		if m.Name == name && m.Kind == kind {
-			return m, nil
-		}
+func pct(done, total int64) int {
+	if total <= 0 {
+		return 0
 	}
-	return models.Model{}, fmt.Errorf("unknown %s model %q", kind, name)
+	return int(done * 100 / total)
+}
+
+// closer matches Close on every engine type (it isn't part of the engine.TTS/STT interfaces —
+// SAPI's Close is a no-op, the sherpa-backed ones free C++ objects). Every implementation is
+// nil-receiver safe, which matters because `v` is the previously-active engine and is a typed
+// nil on the first load — and a nil pointer inside an interface is not itself nil.
+type closer interface{ Close() }
+
+func closeAsync(v any) {
+	if c, ok := v.(closer); ok {
+		go c.Close()
+	}
 }

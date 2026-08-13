@@ -69,11 +69,18 @@ func main() {
 	}
 	svc := newService(cfg, *modelsDir, n)
 	svc.noDownload = *noDownload
+	ui, err := startUI(svc)
+	if err != nil {
+		log.Printf("settings UI unavailable: %v", err) // not fatal: the speech services matter more
+	}
 	if *console {
 		svc.Start()
+		if ui != nil {
+			log.Printf("settings: %s", ui.URL())
+		}
 		select {}
 	}
-	runTray(svc)
+	runTray(svc, ui)
 }
 
 // setupLogging tees the log to %APPDATA%\tts-sst\tts-sst.log — the only place to look when

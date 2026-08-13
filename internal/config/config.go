@@ -9,17 +9,19 @@ import (
 )
 
 type Config struct {
-	Bind     string `json:"bind"`
-	STTPort  int    `json:"sttPort"`
-	TTSPort  int    `json:"ttsPort"`
-	STTModel string `json:"sttModel"` // registry name (models.Registry), "" = default
-	TTSVoice string `json:"ttsVoice"` // registry name, "" = default
-	Language string `json:"language"`
-	Threads  int    `json:"threads"` // 0 = auto
+	Bind     string  `json:"bind"`
+	STTPort  int     `json:"sttPort"`
+	TTSPort  int     `json:"ttsPort"`
+	STTModel string  `json:"sttModel"` // catalog id, "" = pick a default for Language
+	TTSVoice string  `json:"ttsVoice"` // catalog id or "windows-builtin", "" = pick a default
+	Language string  `json:"language"` // the user's language: drives defaults and multi-language hints
+	Speed    float32 `json:"speed"`    // voice speaking rate, 1.0 = natural
+	Threads  int     `json:"threads"`  // 0 = auto
+	Setup    bool    `json:"setup"`    // true once the first-run language choice has been made
 }
 
 func Defaults() Config {
-	return Config{Bind: "127.0.0.1", STTPort: 10300, TTSPort: 10200, Language: "en"}
+	return Config{Bind: "127.0.0.1", STTPort: 10300, TTSPort: 10200, Language: "en", Speed: 1.0}
 }
 
 // Dir is the app's data directory (%APPDATA%\tts-sst), created on demand.
@@ -56,7 +58,16 @@ func Load() Config {
 	if c.Language == "" {
 		c.Language = "en"
 	}
+	if c.Speed <= 0 {
+		c.Speed = 1.0
+	}
 	return c
+}
+
+// Exists reports whether a config file has been written yet — the signal for "first run".
+func Exists() bool {
+	_, err := os.Stat(path())
+	return err == nil
 }
 
 func Save(c Config) error {
