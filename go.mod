@@ -12,6 +12,7 @@ require (
 	github.com/getlantern/hidden v0.0.0-20190325191715-f02dbb02be55 // indirect
 	github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f // indirect
 	github.com/getlantern/systray v1.2.2 // indirect
+	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-linux v1.13.5 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.5 // indirect

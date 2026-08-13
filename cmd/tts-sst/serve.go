@@ -25,7 +25,7 @@ type service struct {
 
 	mu       sync.RWMutex
 	stt      *engine.Recognizer
-	tts      *engine.PiperTTS
+	tts      engine.TTS // *engine.PiperTTS or *engine.SapiTTS
 	sttName  string
 	ttsName  string
 	status   string
@@ -154,27 +154,46 @@ func (s *service) useSTT(name string) error {
 	return nil
 }
 
-// useTTS installs (downloading on demand) and activates the named registry voice.
+// sapiVoiceName is the pseudo-registry entry for the built-in Windows fallback voice: not
+// downloadable, so it's never in models.Registry, but selectable from the same tray menu.
+const sapiVoiceName = "windows-builtin"
+
+// useTTS activates the named voice — either a downloadable registry entry, or the SAPI fallback,
+// which needs no download and cannot fail to become available (Windows always has it).
 func (s *service) useTTS(name string) error {
-	m, err := registryModel(name, models.TTS)
-	if err != nil {
-		return err
-	}
-	if err := s.ensure(m); err != nil {
-		return err
-	}
-	voice, err := engine.NewPiperTTS(filepath.Join(s.modelsDir, m.Dir), s.threads)
-	if err != nil {
-		return err
+	var voice engine.TTS
+	if name == sapiVoiceName {
+		voice = engine.NewSapiTTS()
+	} else {
+		m, err := registryModel(name, models.TTS)
+		if err != nil {
+			return err
+		}
+		if err := s.ensure(m); err != nil {
+			return err
+		}
+		v, err := engine.NewPiperTTS(filepath.Join(s.modelsDir, m.Dir), s.threads)
+		if err != nil {
+			return err
+		}
+		voice = v
 	}
 	s.mu.Lock()
 	old := s.tts
-	s.tts, s.ttsName = voice, m.Name
+	s.tts, s.ttsName = voice, name
 	s.mu.Unlock()
-	if old != nil {
-		go old.Close()
-	}
+	closeAsync(old)
 	return nil
+}
+
+// closer matches both engine.PiperTTS.Close and engine.SapiTTS.Close (neither is part of the
+// engine.TTS interface itself — SAPI's Close is a no-op, Piper's frees a C++ object).
+type closer interface{ Close() }
+
+func closeAsync(v any) {
+	if c, ok := v.(closer); ok {
+		go c.Close()
+	}
 }
 
 // SwitchSTT / SwitchTTS are the tray-menu entry points: swap engines, persist the pick.

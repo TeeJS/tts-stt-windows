@@ -40,6 +40,12 @@ func runTray(svc *service) {
 				picks = append(picks, pick{ttsMenu.AddSubMenuItemCheckbox(m.Description, m.Name, false), m.Name, models.TTS})
 			}
 		}
+		// The SAPI fallback: not in models.Registry (nothing to download), but a real, selectable
+		// voice — the instant/zero-download option, always available.
+		picks = append(picks, pick{
+			ttsMenu.AddSubMenuItemCheckbox("Windows built-in (instant, robotic, no download)", sapiVoiceName, false),
+			sapiVoiceName, models.TTS,
+		})
 		systray.AddSeparator()
 		autostart := systray.AddMenuItemCheckbox("Start with Windows", "Run tts-sst at login", autostartEnabled())
 		openModels := systray.AddMenuItem("Open models folder", "")
