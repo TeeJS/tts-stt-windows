@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/TeeJS/tts-stt-windows/internal/engine"
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
@@ -25,11 +26,24 @@ func main() {
 		sttModel = flag.String("stt-model", "", "STT model directory name under --models (auto-detects sherpa-onnx-* when empty)")
 		ttsVoice = flag.String("tts-voice", "", "TTS voice directory name under --models (auto-detects vits-piper-* when empty)")
 		language = flag.String("language", "en", "STT language hint (whisper models)")
-		threads  = flag.Int("threads", 4, "inference threads per engine")
+		threads  = flag.Int("threads", 0, "inference threads per engine (0 = auto: physical-ish cores, capped at 8)")
 		mock     = flag.Bool("mock", false, "serve mock engines (no models needed) for protocol testing")
 	)
 	flag.Parse()
 	log.SetFlags(log.Ltime)
+	if *threads <= 0 {
+		// Half the logical CPUs approximates physical cores (SMT); onnxruntime scales poorly
+		// beyond ~8 threads for these model sizes.
+		n := runtime.NumCPU() / 2
+		if n < 2 {
+			n = 2
+		}
+		if n > 8 {
+			n = 8
+		}
+		*threads = n
+	}
+	log.Printf("inference threads: %d", *threads)
 
 	var stt wyoming.STTFunc
 	var tts wyoming.TTSFunc

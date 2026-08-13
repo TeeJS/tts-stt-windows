@@ -90,11 +90,13 @@ type Recognizer struct {
 // NewWhisperSTT loads a whisper model directory as distributed in sherpa-onnx's asr-models
 // releases (sherpa-onnx-whisper-*: *-encoder.int8.onnx, *-decoder.int8.onnx, *-tokens.txt).
 func NewWhisperSTT(modelDir, language string, numThreads int) (*Recognizer, error) {
-	encoder, err := findOne(modelDir, "*encoder*.onnx")
+	// sherpa-onnx whisper archives carry BOTH fp32 and int8 variants of each model file;
+	// prefer int8 (much faster on CPU, negligible quality cost for dictation).
+	encoder, err := findPreferred(modelDir, "*encoder*.int8.onnx", "*encoder*.onnx")
 	if err != nil {
 		return nil, fmt.Errorf("whisper %s: %w", modelDir, err)
 	}
-	decoder, err := findOne(modelDir, "*decoder*.onnx")
+	decoder, err := findPreferred(modelDir, "*decoder*.int8.onnx", "*decoder*.onnx")
 	if err != nil {
 		return nil, fmt.Errorf("whisper %s: %w", modelDir, err)
 	}
@@ -119,15 +121,15 @@ func NewWhisperSTT(modelDir, language string, numThreads int) (*Recognizer, erro
 // NewTransducerSTT loads a NeMo transducer model directory (e.g. parakeet:
 // encoder.int8.onnx / decoder.int8.onnx / joiner.int8.onnx / tokens.txt).
 func NewTransducerSTT(modelDir string, numThreads int) (*Recognizer, error) {
-	encoder, err := findOne(modelDir, "encoder*.onnx")
+	encoder, err := findPreferred(modelDir, "encoder*.int8.onnx", "encoder*.onnx")
 	if err != nil {
 		return nil, fmt.Errorf("transducer %s: %w", modelDir, err)
 	}
-	decoder, err := findOne(modelDir, "decoder*.onnx")
+	decoder, err := findPreferred(modelDir, "decoder*.int8.onnx", "decoder*.onnx")
 	if err != nil {
 		return nil, fmt.Errorf("transducer %s: %w", modelDir, err)
 	}
-	joiner, err := findOne(modelDir, "joiner*.onnx")
+	joiner, err := findPreferred(modelDir, "joiner*.int8.onnx", "joiner*.onnx")
 	if err != nil {
 		return nil, fmt.Errorf("transducer %s: %w", modelDir, err)
 	}
@@ -201,6 +203,20 @@ func pcm16ToFloat(pcm []byte) []float32 {
 		out[i] = float32(v) / 32768
 	}
 	return out
+}
+
+// findPreferred tries patterns in order and returns the single match of the first pattern that
+// matches anything — e.g. int8 model files ahead of their fp32 siblings.
+func findPreferred(dir string, patterns ...string) (string, error) {
+	var lastErr error
+	for _, p := range patterns {
+		f, err := findOne(dir, p)
+		if err == nil {
+			return f, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
 }
 
 // findOne returns the single file matching pattern in dir, erroring on zero or ambiguity —
