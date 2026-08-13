@@ -141,6 +141,7 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 		"status":          svc.Status(),
 		"busy":            svc.Busy(),
 		"language":        svc.cfg.Language,
+		"browseLanguage":  svc.cfg.BrowseLanguage,
 		"systemRegion":    systemRegion,
 		"speed":           svc.cfg.Speed,
 		"setup":           svc.cfg.Setup,
@@ -220,7 +221,8 @@ func (u *uiServer) handleRemove(w http.ResponseWriter, r *http.Request) {
 func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Language        string   `json:"language"`
-		Voice           string   `json:"voice"` // chosen in the setup card; "" = pick a default
+		BrowseLanguage  *string  `json:"browseLanguage"` // pointer: "" is a real value (show all languages)
+		Voice           string   `json:"voice"`          // chosen in the setup card; "" = pick a default
 		Speed           *float32 `json:"speed"`
 		Setup           *bool    `json:"setup"`
 		FilterNonSpeech *bool    `json:"filterNonSpeech"`
@@ -234,6 +236,9 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Speed != nil {
 		u.svc.SetSpeed(*body.Speed)
+	}
+	if body.BrowseLanguage != nil {
+		u.svc.SetBrowseLanguage(*body.BrowseLanguage)
 	}
 	if body.FilterNonSpeech != nil {
 		u.svc.SetFilterNonSpeech(*body.FilterNonSpeech)

@@ -18,11 +18,16 @@
   body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 "Segoe UI", system-ui, sans-serif; }
   #wrap { display:flex; min-height:100vh; }
 
-  nav { flex:0 0 210px; background:var(--panel); border-right:1px solid var(--line); padding:20px 0; }
+  /* Wide enough for the longest label at the ACTIVE weight: the selected item is bold, and at
+     210px "Speech recognition (STT)" needed 211px bold vs 205px normal — so selecting it wrapped
+     it onto a second line and the sidebar appeared to change shape. nowrap keeps every row one
+     line tall no matter what a future label or a different font rendering does. */
+  nav { flex:0 0 240px; background:var(--panel); border-right:1px solid var(--line); padding:20px 0; }
   nav h1 { font-size:19px; margin:0 20px 20px; letter-spacing:.02em; }
   nav h1 span { color:var(--accent); }
   nav button { display:block; width:100%; text-align:left; padding:11px 20px; border:0; background:none;
-    color:var(--dim); font:inherit; cursor:pointer; border-left:3px solid transparent; }
+    color:var(--dim); font:inherit; cursor:pointer; border-left:3px solid transparent;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   nav button:hover { color:var(--fg); }
   nav button.on { color:var(--fg); background:var(--panel2); border-left-color:var(--accent); font-weight:600; }
   #navStatus { margin:22px 20px 0; padding-top:16px; border-top:1px solid var(--line);
@@ -82,13 +87,13 @@
   <nav>
     <h1>tts<span>·</span>sst</h1>
     <button data-tab="settings" class="on">Settings</button>
-    <button data-tab="voices">Voices</button>
-    <button data-tab="speech">Speech recognition</button>
+    <button data-tab="voices">Voices (TTS)</button>
+    <button data-tab="speech">Speech recognition (STT)</button>
     <div id="navStatus">Loading…</div>
   </nav>
   <main>
     <div id="tab-voices">
-      <h2>Voices</h2>
+      <h2>Voices (TTS)</h2>
       <p class="sub">The voice that reads replies aloud. Downloaded voices work offline, forever.</p>
       <div class="toolbar">
         <input type="search" id="q-voices" placeholder="Search voices…">
@@ -98,7 +103,7 @@
     </div>
 
     <div id="tab-speech" hidden>
-      <h2>Speech recognition</h2>
+      <h2>Speech recognition (STT)</h2>
       <p class="sub">The model that turns what you say into text. Larger models are more accurate but slower.</p>
       <div class="toolbar">
         <input type="search" id="q-speech" placeholder="Search models…">
@@ -185,11 +190,41 @@ function langLabel(code) { return (state.languages && state.languages[code]) || 
 function langOptions(sel, models, includeAll) {
   const codes = new Set();
   models.forEach(m => m.langs.forEach(l => codes.add(l)));
+  // A list containing multi-language models can serve ANY language, so offer them all. Otherwise
+  // a German speaker browsing speech recognition sees no German option at all — even though
+  // Whisper, Parakeet and Dolphin all transcribe German — because none is German-specific.
+  if (includeAll && codes.has('multi')) {
+    Object.keys(state.languages || {}).forEach(l => codes.add(l));
+  }
   const list = [...codes].sort((a,b) => a === 'multi' ? -1 : b === 'multi' ? 1 : langLabel(a).localeCompare(langLabel(b)));
   const prev = sel.value;
   sel.innerHTML = (includeAll ? '<option value="">All languages</option>' : '') +
     list.map(c => `<option value="${c}">${langLabel(c)}</option>`).join('');
   if (prev) sel.value = prev;
+}
+
+// The list filters start on the language the user last browsed in — remembered server-side, since
+// this page's port changes every launch and localStorage is keyed by origin, so it would be lost
+// on every restart. A saved "" means they deliberately widened it back to all languages; only a
+// user who has never touched a filter falls back to their own language.
+// Stored as "" (never chosen — start on the user's own language), "all" (they deliberately
+// widened it back out), or a language code.
+let filtersSeeded = false;
+function seedFilters() {
+  if (filtersSeeded) return;
+  filtersSeeded = true;
+  const saved = state.browseLanguage;
+  const start = saved === '' ? state.language : saved === 'all' ? '' : saved;
+  for (const sel of [$('#lang-voices'), $('#lang-speech')]) {
+    if ([...sel.options].some(o => o.value === start)) sel.value = start;
+  }
+}
+function rememberFilter(value) {
+  // Keep both lists on the same language: they answer the same question ("what do you speak?").
+  $('#lang-voices').value = value;
+  $('#lang-speech').value = value;
+  post('/api/settings', { browseLanguage: value === '' ? 'all' : value });
+  render();
 }
 
 // Entries with no model behind them: "Off" and the built-in Windows voice. They never download,
@@ -249,9 +284,10 @@ function renderList(kind, listEl, q, langSel) {
   const term = q.value.trim().toLowerCase();
   const lang = langSel.value;
   const match = all.filter(m => {
-    // "Off" isn't tied to a language, so a language filter must never hide it — otherwise
-    // filtering to German would remove the only way to turn the service off.
-    if (lang && m.family !== 'off' && !m.langs.includes(lang)) return false;
+    // Filtering by a language means "show what can serve me", so multi-language models always
+    // qualify. "Off" isn't tied to a language either — otherwise filtering to German would
+    // remove the only way to turn the service off.
+    if (lang && m.family !== 'off' && !m.langs.includes(lang) && !m.langs.includes('multi')) return false;
     if (!term) return true;
     return (m.name + ' ' + m.family + ' ' + m.langs.map(langLabel).join(' ') + ' ' + (m.region||'')).toLowerCase().includes(term);
   });
@@ -294,6 +330,13 @@ function render() {
 
   renderList('tts', $('#list-voices'), $('#q-voices'), $('#lang-voices'));
   renderList('stt', $('#list-speech'), $('#q-speech'), $('#lang-speech'));
+  // Seeding needs the option lists to exist, which the pass above builds — so on the very first
+  // render, apply the remembered language and rebuild the lists through that filter.
+  if (!filtersSeeded) {
+    seedFilters();
+    renderList('tts', $('#list-voices'), $('#q-voices'), $('#lang-voices'));
+    renderList('stt', $('#list-speech'), $('#q-speech'), $('#lang-speech'));
+  }
 
   langOptions($('#setLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
   $('#setLang').value = state.language;
@@ -346,8 +389,19 @@ function setupPlan() {
 
 // ---- events ----
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
-['#q-voices','#lang-voices','#q-speech','#lang-speech'].forEach(s => $(s).oninput = render);
-$('#setLang').onchange = async e => { await post('/api/settings', {language: e.target.value}); load(); };
+['#q-voices','#q-speech'].forEach(s => $(s).oninput = render);
+// Language filters persist, so both lists follow the pick and it survives a restart.
+['#lang-voices','#lang-speech'].forEach(s => $(s).onchange = e => rememberFilter(e.target.value));
+// Setting "My language" is the one place a user states what they speak, so the Voices and Speech
+// recognition lists follow it immediately — picking English here filters both lists to English.
+// A filter changed on one of those tabs is a temporary browse; choosing here overrides it again.
+$('#setLang').onchange = async e => {
+  const lang = e.target.value;
+  $('#lang-voices').value = lang;
+  $('#lang-speech').value = lang;
+  await post('/api/settings', { language: lang, browseLanguage: lang });
+  load();
+};
 $('#speed').oninput = e => { $('#speedVal').textContent = Number(e.target.value).toFixed(2).replace(/0$/,'') + '×'; };
 $('#speed').onchange = async e => { await post('/api/settings', {speed: Number(e.target.value)}); };
 $('#filterNS').onchange = async e => { await post('/api/settings', {filterNonSpeech: e.target.checked}); };

@@ -393,6 +393,14 @@ func (s *service) SetLanguage(lang string) {
 	config.Save(s.cfg)
 }
 
+// SetBrowseLanguage remembers which language the settings lists are filtered to. "all" is stored
+// as a real choice — someone who deliberately widened the list back out shouldn't find it narrowed
+// again on the next visit.
+func (s *service) SetBrowseLanguage(lang string) {
+	s.cfg.BrowseLanguage = lang
+	config.Save(s.cfg)
+}
+
 // SetFilterNonSpeech turns the "(clicking)" / "[BLANK_AUDIO]" filter on or off.
 func (s *service) SetFilterNonSpeech(on bool) {
 	s.cfg.FilterNonSpeech = on

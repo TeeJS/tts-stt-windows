@@ -9,15 +9,19 @@ import (
 )
 
 type Config struct {
-	Bind     string  `json:"bind"`
-	STTPort  int     `json:"sttPort"`
-	TTSPort  int     `json:"ttsPort"`
-	STTModel string  `json:"sttModel"` // catalog id, "" = pick a default for Language
-	TTSVoice string  `json:"ttsVoice"` // catalog id or "windows-builtin", "" = pick a default
-	Language string  `json:"language"` // the user's language: drives defaults and multi-language hints
-	Speed    float32 `json:"speed"`    // voice speaking rate, 1.0 = natural
-	Threads  int     `json:"threads"`  // 0 = auto
-	Setup    bool    `json:"setup"`    // true once the first-run language choice has been made
+	Bind     string `json:"bind"`
+	STTPort  int    `json:"sttPort"`
+	TTSPort  int    `json:"ttsPort"`
+	STTModel string `json:"sttModel"` // catalog id, "" = pick a default for Language
+	TTSVoice string `json:"ttsVoice"` // catalog id or "windows-builtin", "" = pick a default
+	Language string `json:"language"` // the user's language: drives defaults and multi-language hints
+	// BrowseLanguage is the language the model lists in the settings page are filtered to.
+	// Deliberately separate from Language: filtering the list to audition German voices must not
+	// silently change the language hint handed to speech recognition. "" follows Language.
+	BrowseLanguage string  `json:"browseLanguage"`
+	Speed          float32 `json:"speed"`   // voice speaking rate, 1.0 = natural
+	Threads        int     `json:"threads"` // 0 = auto
+	Setup          bool    `json:"setup"`   // true once the first-run language choice has been made
 	// FilterNonSpeech drops transcripts that are only a model's description of a sound —
 	// "(clicking)", "[BLANK_AUDIO]" — instead of passing them on as if they were spoken.
 	FilterNonSpeech bool `json:"filterNonSpeech"`
