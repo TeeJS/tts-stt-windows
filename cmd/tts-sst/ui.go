@@ -102,16 +102,34 @@ type stateModel struct {
 func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 	svc := u.svc
 	all := models.All()
-	out := make([]stateModel, 0, len(all)+1)
-	// The built-in Windows voice heads the list: always present, nothing to download.
-	out = append(out, stateModel{
-		Model: models.Model{
-			ID: sapiVoiceID, Kind: models.TTS, Family: "windows", Name: "Windows built-in",
-			Langs: []string{"multi"}, Notes: "Instant · robotic · no download",
+	out := make([]stateModel, 0, len(all)+3)
+	// Synthetic entries heading each list. None is in the catalog and none downloads anything:
+	// "Off" stops that service entirely, and the built-in Windows voice always exists.
+	out = append(out,
+		stateModel{
+			Model: models.Model{
+				ID: offTTSID, Kind: models.TTS, Family: "off", Name: "Off",
+				Langs: []string{"multi"}, Notes: "Stop text-to-speech · frees its memory and port",
+			},
+			Installed: true,
+			Active:    isOff(svc.ActiveTTS()),
 		},
-		Installed: true,
-		Active:    svc.ActiveTTS() == sapiVoiceID,
-	})
+		stateModel{
+			Model: models.Model{
+				ID: offSTTID, Kind: models.STT, Family: "off", Name: "Off",
+				Langs: []string{"multi"}, Notes: "Stop speech-to-text · frees its memory and port",
+			},
+			Installed: true,
+			Active:    isOff(svc.ActiveSTT()),
+		},
+		stateModel{
+			Model: models.Model{
+				ID: sapiVoiceID, Kind: models.TTS, Family: "windows", Name: "Windows built-in",
+				Langs: []string{"multi"}, Notes: "Instant · robotic · no download",
+			},
+			Installed: true,
+			Active:    svc.ActiveTTS() == sapiVoiceID,
+		})
 	for _, m := range all {
 		out = append(out, stateModel{
 			Model:     m,
@@ -143,8 +161,16 @@ func (u *uiServer) handleSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	kind := models.TTS
-	if body.ID != sapiVoiceID {
+	// "off" is per-service, so the page sends a distinct id for each; both map to the same
+	// stored value. Everything else is either the built-in voice or a catalog entry.
+	id, kind := body.ID, models.TTS
+	switch body.ID {
+	case offTTSID:
+		id = offID
+	case offSTTID:
+		id, kind = offID, models.STT
+	case sapiVoiceID:
+	default:
 		m, ok := models.ByID(body.ID)
 		if !ok {
 			http.Error(w, "unknown model", http.StatusNotFound)
@@ -155,9 +181,9 @@ func (u *uiServer) handleSelect(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		var err error
 		if kind == models.STT {
-			err = u.svc.SwitchSTT(body.ID)
+			err = u.svc.SwitchSTT(id)
 		} else {
-			err = u.svc.SwitchTTS(body.ID)
+			err = u.svc.SwitchTTS(id)
 		}
 		if err != nil {
 			log.Printf("select %s: %v", body.ID, err)

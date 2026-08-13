@@ -192,13 +192,19 @@ function langOptions(sel, models, includeAll) {
   if (prev) sel.value = prev;
 }
 
+// Entries with no model behind them: "Off" and the built-in Windows voice. They never download,
+// never delete, and their language list ("multi") would be meaningless on the card.
+const isSynthetic = m => m.family === 'off' || m.id === 'windows-builtin';
+
 function card(m) {
   const size = m.size ? (m.size >= 1073741824
     ? (m.size/1073741824).toFixed(1) + ' GB'
     : Math.round(m.size/1048576) + ' MB') : '';
   const bits = [];
-  if (m.region) bits.push(langLabel(m.langs[0]) + ' (' + m.region + ')');
-  else bits.push(m.langs.map(langLabel).join(', '));
+  if (!isSynthetic(m)) {
+    if (m.region) bits.push(langLabel(m.langs[0]) + ' (' + m.region + ')');
+    else bits.push(m.langs.map(langLabel).join(', '));
+  }
   if (m.quality) bits.push(m.quality.replace('x_low','extra low'));
   if (m.notes) bits.push(m.notes);
   if (size) bits.push(size);
@@ -210,7 +216,7 @@ function card(m) {
       <div class="title">
         <span class="name"></span>
         ${m.active ? '<span class="badge on">Active</span>' : ''}
-        ${m.installed && !m.active && m.id !== 'windows-builtin' ? '<span class="badge">Downloaded</span>' : ''}
+        ${m.installed && !m.active && !isSynthetic(m) ? '<span class="badge">Downloaded</span>' : ''}
       </div>
       <div class="meta"></div>
     </div>
@@ -227,7 +233,7 @@ function card(m) {
     use.onclick = async () => { use.disabled = true; use.textContent = 'Starting…'; await post('/api/select', {id:m.id}); load(); };
     actions.appendChild(use);
   }
-  if (m.installed && !m.active && m.id !== 'windows-builtin') {
+  if (m.installed && !m.active && !isSynthetic(m)) {
     const del = document.createElement('button');
     del.className = 'act link';
     del.textContent = 'Delete';
@@ -243,7 +249,9 @@ function renderList(kind, listEl, q, langSel) {
   const term = q.value.trim().toLowerCase();
   const lang = langSel.value;
   const match = all.filter(m => {
-    if (lang && !m.langs.includes(lang)) return false;
+    // "Off" isn't tied to a language, so a language filter must never hide it — otherwise
+    // filtering to German would remove the only way to turn the service off.
+    if (lang && m.family !== 'off' && !m.langs.includes(lang)) return false;
     if (!term) return true;
     return (m.name + ' ' + m.family + ' ' + m.langs.map(langLabel).join(' ') + ' ' + (m.region||'')).toLowerCase().includes(term);
   });
@@ -261,8 +269,13 @@ function renderList(kind, listEl, q, langSel) {
 
   listEl.innerHTML = '';
   if (!match.length) { listEl.innerHTML = '<div class="empty">Nothing matches that search.</div>'; return; }
+  // "Off" sits on its own above the models: it isn't a thing you'd scan the language list for,
+  // and burying it among 200 voices would make turning a service off feel like a trick.
+  const off = match.filter(m => m.family === 'off');
+  off.forEach(m => listEl.appendChild(card(m)));
+  const models_ = match.filter(m => m.family !== 'off');
   // Downloaded models first — the ones the user can switch to instantly.
-  const have = match.filter(m => m.installed), rest = match.filter(m => !m.installed);
+  const have = models_.filter(m => m.installed), rest = models_.filter(m => !m.installed);
   const section = (title, items) => {
     if (!items.length) return;
     const h = document.createElement('div');

@@ -17,6 +17,20 @@ import (
 // selectable like any other, and the only voice guaranteed to exist before any download.
 const sapiVoiceID = "windows-builtin"
 
+// offID marks a service the user has switched off. Stored in the same config field as a model id
+// (like sapiVoiceID) rather than as a separate flag, so "which model, if any" stays one value.
+// An EMPTY field still means "pick a default" — only this explicit value disables a service.
+const offID = "off"
+
+// The settings page needs one id per service (a single "off" card would be ambiguous about which
+// service it turns off), so each list gets its own; both resolve to offID when applied.
+const (
+	offTTSID = "off-tts"
+	offSTTID = "off-stt"
+)
+
+func isOff(id string) bool { return id == offID }
+
 // service owns the engines and their Wyoming listeners, and supports live engine swaps from the
 // settings UI. The closures handed to ServeSTT/ServeTTS read the current engine through the mutex,
 // so a swap never requires touching the listeners.
@@ -35,7 +49,12 @@ type service struct {
 	busy     string // non-empty while a download/load is in flight, for the UI
 	onChange func() // tray/UI refresh hook
 
-	listenOnce sync.Once
+	// Listeners are held so a service can be switched off at runtime: closing the listener makes
+	// its accept loop return, which frees the port instead of leaving something bound that answers
+	// with nothing. Guarded by their own mutex, since enabling one blocks on a model load.
+	lnMu  sync.Mutex
+	sttLn net.Listener
+	ttsLn net.Listener
 }
 
 func newService(cfg config.Config, modelsDir string, threads int) *service {
@@ -69,13 +88,22 @@ func (s *service) setBusy(what string) {
 
 // running composes the steady-state status line from whatever is actually loaded.
 func (s *service) running() {
-	voice, stt := s.ActiveTTS(), s.ActiveSTT()
-	s.setStatus("Running — %s · %s", label(stt), label(voice))
+	stt, tts := s.ActiveSTT(), s.ActiveTTS()
+	if isOff(stt) && isOff(tts) {
+		s.setStatus("Both services are off — nothing is being served")
+		return
+	}
+	s.setStatus("Running — %s · %s", label(stt), label(tts))
 }
 
 func label(id string) string {
-	if id == sapiVoiceID {
+	switch id {
+	case offID:
+		return "off"
+	case sapiVoiceID:
 		return "Windows built-in voice"
+	case "":
+		return "none"
 	}
 	if m, ok := models.ByID(id); ok {
 		if m.Region != "" {
@@ -83,10 +111,16 @@ func label(id string) string {
 		}
 		return m.Name
 	}
-	if id == "" {
-		return "none"
-	}
 	return id
+}
+
+// advertised is the model name to publish in Wyoming discovery, or "" for a service that is off
+// so BuildInfo omits it entirely — a client shouldn't be told about a service that isn't running.
+func advertised(id string) string {
+	if isOff(id) || id == "" {
+		return ""
+	}
+	return label(id)
 }
 
 // Start loads the configured engines (downloading them if needed) and brings the listeners up.
@@ -108,23 +142,27 @@ func (s *service) Start() {
 		voiceID := s.resolve(s.cfg.TTSVoice, models.TTS, defVoice.ID)
 		sttID := s.resolve(s.cfg.STTModel, models.STT, defSTT.ID)
 		// Voice first: it loads in seconds where a speech model can take a minute to download,
-		// so the panel can talk back as early as possible.
+		// so speech is available as early as possible.
 		if err := s.useTTS(voiceID); err != nil {
 			s.setStatus("Voice load failed: %v", err)
 		}
 		if err := s.useSTT(sttID); err != nil {
 			s.setStatus("Speech model load failed: %v", err)
 		}
-		s.listen()
+		s.syncListeners()
 		s.running()
 	}()
 }
 
 // resolve returns id if it names something loadable, otherwise fallback. Keeps a stale or
-// hand-edited config from leaving the server with no voice or no speech model.
+// hand-edited config from leaving the server with no voice or no speech model. "off" is a
+// deliberate choice, not a broken value, so it passes through untouched.
 func (s *service) resolve(id string, kind models.Kind, fallback string) string {
 	if id == "" {
 		return fallback
+	}
+	if isOff(id) {
+		return id
 	}
 	if kind == models.TTS && id == sapiVoiceID {
 		return id
@@ -136,24 +174,50 @@ func (s *service) resolve(id string, kind models.Kind, fallback string) string {
 	return fallback
 }
 
-// listen starts both Wyoming listeners exactly once.
-func (s *service) listen() {
-	s.listenOnce.Do(func() {
-		info := wyoming.BuildInfo(label(s.ActiveSTT()), label(s.ActiveTTS()))
-		sttL, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cfg.Bind, s.cfg.STTPort))
-		if err != nil {
-			s.setStatus("Speech port %d busy: %v", s.cfg.STTPort, err)
-			return
+// syncListeners brings each Wyoming listener into line with whether its service is on: opened
+// when a service is active, closed (freeing the port) when it is off. Safe to call repeatedly —
+// it only acts on a service whose state actually changed.
+func (s *service) syncListeners() {
+	s.lnMu.Lock()
+	defer s.lnMu.Unlock()
+
+	// The advertised model names change with every switch, so discovery data is rebuilt here
+	// rather than captured once at startup.
+	info := wyoming.BuildInfo(advertised(s.ActiveSTT()), advertised(s.ActiveTTS()))
+
+	if want := !isOff(s.ActiveSTT()); want != (s.sttLn != nil) {
+		if want {
+			ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cfg.Bind, s.cfg.STTPort))
+			if err != nil {
+				s.setStatus("Speech port %d busy: %v", s.cfg.STTPort, err)
+			} else {
+				s.sttLn = ln
+				log.Printf("STT listening on %s", ln.Addr())
+				go wyoming.ServeSTT(ln, s.transcribe, info, log.Printf)
+			}
+		} else {
+			log.Printf("STT stopped listening on %s", s.sttLn.Addr())
+			s.sttLn.Close() // the accept loop returns on net.ErrClosed
+			s.sttLn = nil
 		}
-		ttsL, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cfg.Bind, s.cfg.TTSPort))
-		if err != nil {
-			s.setStatus("Voice port %d busy: %v", s.cfg.TTSPort, err)
-			return
+	}
+
+	if want := !isOff(s.ActiveTTS()); want != (s.ttsLn != nil) {
+		if want {
+			ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.cfg.Bind, s.cfg.TTSPort))
+			if err != nil {
+				s.setStatus("Voice port %d busy: %v", s.cfg.TTSPort, err)
+			} else {
+				s.ttsLn = ln
+				log.Printf("TTS listening on %s", ln.Addr())
+				go wyoming.ServeTTS(ln, s.synthesize, info, log.Printf)
+			}
+		} else {
+			log.Printf("TTS stopped listening on %s", s.ttsLn.Addr())
+			s.ttsLn.Close()
+			s.ttsLn = nil
 		}
-		log.Printf("STT listening on %s, TTS listening on %s", sttL.Addr(), ttsL.Addr())
-		go wyoming.ServeSTT(sttL, s.transcribe, info, log.Printf)
-		go wyoming.ServeTTS(ttsL, s.synthesize, info, log.Printf)
-	})
+	}
 }
 
 func (s *service) transcribe(pcm []byte, f wyoming.AudioFormat, _ string) (string, error) {
@@ -189,10 +253,19 @@ func (s *service) synthesize(text string) ([]byte, wyoming.AudioFormat, error) {
 	return pcm, wyoming.AudioFormat{Rate: rate, Width: 2, Channels: 1}, err
 }
 
-// useSTT installs (downloading on demand) and activates a speech model by catalog id.
+// useSTT installs (downloading on demand) and activates a speech model by catalog id, or unloads
+// the engine entirely when switched off — which is where the model's memory is actually returned.
 func (s *service) useSTT(id string) error {
 	if id == "" {
 		return fmt.Errorf("no speech model chosen")
+	}
+	if isOff(id) {
+		s.mu.Lock()
+		old := s.stt
+		s.stt, s.sttID = nil, offID
+		s.mu.Unlock()
+		closeAsync(old)
+		return nil
 	}
 	m, ok := models.ByID(id)
 	if !ok || m.Kind != models.STT {
@@ -227,10 +300,19 @@ func sttLanguage(m models.Model, userLang string) string {
 	return ""
 }
 
-// useTTS activates a voice by catalog id, or the SAPI built-in, downloading if needed.
+// useTTS activates a voice by catalog id, or the SAPI built-in, downloading if needed. "off"
+// unloads the current voice and frees its memory.
 func (s *service) useTTS(id string) error {
 	if id == "" {
 		return fmt.Errorf("no voice chosen")
+	}
+	if isOff(id) {
+		s.mu.Lock()
+		old := s.tts
+		s.tts, s.ttsID = nil, offID
+		s.mu.Unlock()
+		closeAsync(old)
+		return nil
 	}
 	var voice engine.TTS
 	if id == sapiVoiceID {
@@ -260,7 +342,8 @@ func (s *service) useTTS(id string) error {
 	return nil
 }
 
-// SwitchSTT / SwitchTTS are the UI entry points: swap engines, persist the pick.
+// SwitchSTT / SwitchTTS are the UI entry points: swap engines, bring the listener into line with
+// whether the service is on, and persist the pick.
 func (s *service) SwitchSTT(id string) error {
 	if err := s.useSTT(id); err != nil {
 		s.setStatus("Switch failed: %v", err)
@@ -268,6 +351,7 @@ func (s *service) SwitchSTT(id string) error {
 	}
 	s.cfg.STTModel = id
 	config.Save(s.cfg)
+	s.syncListeners()
 	s.running()
 	return nil
 }
@@ -279,6 +363,7 @@ func (s *service) SwitchTTS(id string) error {
 	}
 	s.cfg.TTSVoice = id
 	config.Save(s.cfg)
+	s.syncListeners()
 	s.running()
 	return nil
 }

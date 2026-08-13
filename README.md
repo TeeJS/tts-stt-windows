@@ -21,13 +21,14 @@ Clients connect to `127.0.0.1:10300` (STT) and `127.0.0.1:10200` (TTS).
 
 ## Voices and models
 
-Open **Settings & models** from the tray to browse everything, filtered by language and searchable:
+Open **Settings** from the tray to browse everything, filtered by language and searchable:
 
 | | What's available |
 |---|---|
 | Voices | 178 Piper + 25 Coqui voices across 47 locales, in extra-low to high quality. Multiple accents per language where they exist (16 for en-GB alone). |
 | Windows built-in | The old SAPI voice: robotic, but instant and needs no download. |
 | Speech recognition | Whisper (99 languages, tiny → large), Parakeet v3 (25 European languages, fast — the default), Dolphin (40 Asian languages), SenseVoice (zh/en/ja/ko/yue), Moonshine (fastest, per-language). |
+| Off | Either service can be switched off, freeing its memory and releasing its port. |
 
 Everything runs on the CPU; no GPU required. Models download on selection and can be deleted from
 the same page.
@@ -38,7 +39,7 @@ with `go run ./tools/gen-catalog`.
 
 ## Settings
 
-The settings page (tray → **Settings & models**) covers language, speaking rate, the non-speech
+The settings page (tray → **Settings**) covers language, speaking rate, the non-speech
 filter, and a voice test. It writes `%APPDATA%\tts-sst\config.json`, which also holds the bind
 address, ports and thread count. Models live in `%APPDATA%\tts-sst\models\`, the log in
 `%APPDATA%\tts-sst\tts-sst.log`.
@@ -46,6 +47,11 @@ address, ports and thread count. Models live in `%APPDATA%\tts-sst\models\`, the
 **Ignore non-speech sounds** (on by default): speech models write `(clicking)`, `[BLANK_AUDIO]` or
 music markers when they hear noise rather than words, and some invent stock phrases during
 silence. Those are discarded instead of being passed on as if you had said them.
+
+**Running only one service.** Pick **Off** at the top of either list to shut that half down: its
+model is unloaded and its port released, immediately and without a restart. Speech recognition is
+the expensive half — switching it off drops the app from ~750 MB to ~80 MB, measured with Parakeet
+v3. Idle CPU is zero either way, so memory is the only thing running both actually costs.
 
 Flags override config for one run: `-console` (no tray), `-mock` (protocol testing, no models),
 `-no-download`, `-bind`, `-stt-port`, `-tts-port`, `-threads`, `-models`.
