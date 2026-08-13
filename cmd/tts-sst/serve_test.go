@@ -103,6 +103,31 @@ func TestListenerLifecycle(t *testing.T) {
 	}
 }
 
+// Discovery must reflect the CURRENT state, not the state when the listener happened to start.
+// Regression test: switching TTS off left the still-running STT listener advertising a
+// text-to-speech service whose port had just been closed, so a client that discovered services
+// there would try to connect to nothing.
+func TestInfoFollowsServiceState(t *testing.T) {
+	s := newService(config.Defaults(), t.TempDir(), 2)
+	s.sttID, s.ttsID = "parakeet-tdt-0.6b-v3", "piper-en-GB-alan-medium"
+	if info := s.info(); info["asr"] == nil || info["tts"] == nil {
+		t.Fatal("both services running: both should be advertised")
+	}
+	// Turn TTS off WITHOUT touching the STT listener, exactly as the UI does.
+	s.ttsID = offID
+	info := s.info()
+	if info["tts"] != nil {
+		t.Error("a service that is off must not be advertised")
+	}
+	if info["asr"] == nil {
+		t.Error("the service still running must stay advertised")
+	}
+	s.sttID = offID
+	if info := s.info(); len(info) != 0 {
+		t.Errorf("both off should advertise nothing, got %v", info)
+	}
+}
+
 // A service that is off must not be advertised to Wyoming discovery: a client shouldn't be told
 // about something that isn't running.
 func TestAdvertised(t *testing.T) {

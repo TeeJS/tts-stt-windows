@@ -25,6 +25,15 @@ type TTSFunc func(text string) (pcm []byte, format AudioFormat, err error)
 // populate the fields discovery actually reads.
 type Info map[string]any
 
+// InfoFunc supplies the current Info for each `describe`. It is a function rather than a plain
+// value because what a server offers changes while it runs — a model is switched, or a service is
+// turned off — and a snapshot taken when the listener started would go on advertising the old
+// answer, including a service that is no longer listening on its port.
+type InfoFunc func() Info
+
+// StaticInfo adapts a fixed Info, for callers whose answer genuinely never changes (tests, mock).
+func StaticInfo(i Info) InfoFunc { return func() Info { return i } }
+
 // audio-chunk payload size on the wire. Matches observed wyoming-piper behavior; small enough
 // that clients can start playback while later chunks are still being written.
 const chunkSize = 2048
@@ -32,7 +41,7 @@ const chunkSize = 2048
 // ServeSTT accepts connections and runs the ASR session protocol on each:
 // transcribe{language}? -> audio-start{fmt} -> audio-chunk(s)+PCM -> audio-stop => transcript{text}.
 // Multiple sequential requests per connection are supported; connections may also be one-shot.
-func ServeSTT(l net.Listener, stt STTFunc, info Info, logf func(string, ...any)) {
+func ServeSTT(l net.Listener, stt STTFunc, info InfoFunc, logf func(string, ...any)) {
 	serve(l, logf, func(conn net.Conn, r *bufio.Reader) error {
 		var (
 			language string
@@ -46,7 +55,7 @@ func ServeSTT(l net.Listener, stt STTFunc, info Info, logf func(string, ...any))
 			}
 			switch ev.Type {
 			case "describe":
-				if err := WriteEvent(conn, "info", info, nil); err != nil {
+				if err := WriteEvent(conn, "info", info(), nil); err != nil {
 					return err
 				}
 			case "transcribe":
@@ -76,7 +85,7 @@ func ServeSTT(l net.Listener, stt STTFunc, info Info, logf func(string, ...any))
 
 // ServeTTS accepts connections and runs the TTS session protocol on each:
 // synthesize{text} => audio-start{fmt} -> audio-chunk(s)+PCM -> audio-stop.
-func ServeTTS(l net.Listener, tts TTSFunc, info Info, logf func(string, ...any)) {
+func ServeTTS(l net.Listener, tts TTSFunc, info InfoFunc, logf func(string, ...any)) {
 	serve(l, logf, func(conn net.Conn, r *bufio.Reader) error {
 		for {
 			ev, err := ReadEvent(r)
@@ -85,7 +94,7 @@ func ServeTTS(l net.Listener, tts TTSFunc, info Info, logf func(string, ...any))
 			}
 			switch ev.Type {
 			case "describe":
-				if err := WriteEvent(conn, "info", info, nil); err != nil {
+				if err := WriteEvent(conn, "info", info(), nil); err != nil {
 					return err
 				}
 			case "synthesize":

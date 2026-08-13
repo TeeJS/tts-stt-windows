@@ -114,6 +114,12 @@ func label(id string) string {
 	return id
 }
 
+// info answers a `describe` with what is true right now — which services are actually running and
+// which model each is using.
+func (s *service) info() wyoming.Info {
+	return wyoming.BuildInfo(advertised(s.ActiveSTT()), advertised(s.ActiveTTS()))
+}
+
 // advertised is the model name to publish in Wyoming discovery, or "" for a service that is off
 // so BuildInfo omits it entirely — a client shouldn't be told about a service that isn't running.
 func advertised(id string) string {
@@ -181,9 +187,10 @@ func (s *service) syncListeners() {
 	s.lnMu.Lock()
 	defer s.lnMu.Unlock()
 
-	// The advertised model names change with every switch, so discovery data is rebuilt here
-	// rather than captured once at startup.
-	info := wyoming.BuildInfo(advertised(s.ActiveSTT()), advertised(s.ActiveTTS()))
+	// Discovery is answered from current state on every request, not from a snapshot: a listener
+	// created while both services were on would otherwise keep telling clients about the other
+	// service long after it was switched off and its port closed.
+	info := s.info
 
 	if want := !isOff(s.ActiveSTT()); want != (s.sttLn != nil) {
 		if want {

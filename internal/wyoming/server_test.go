@@ -62,7 +62,7 @@ func TestSTTSession(t *testing.T) {
 	go ServeSTT(l, func(pcm []byte, f AudioFormat, lang string) (string, error) {
 		gotPCM, gotFormat, gotLang = append([]byte(nil), pcm...), f, lang
 		return "hello world", nil
-	}, BuildInfo("test-model", ""), t.Logf)
+	}, StaticInfo(BuildInfo("test-model", "")), t.Logf)
 
 	conn, r := dial(t, l)
 	pcm := bytes.Repeat([]byte{0x01, 0x02}, 4000)
@@ -99,7 +99,7 @@ func TestTTSSession(t *testing.T) {
 			return nil, AudioFormat{}, fmt.Errorf("wrong text %q", text)
 		}
 		return pcm, AudioFormat{22050, 2, 1}, nil
-	}, BuildInfo("", "test-voice"), t.Logf)
+	}, StaticInfo(BuildInfo("", "test-voice")), t.Logf)
 
 	conn, r := dial(t, l)
 	writeInline(t, conn, "synthesize", `{"text":"say this"}`, nil)
@@ -133,7 +133,7 @@ func TestTTSSession(t *testing.T) {
 func TestDescribe(t *testing.T) {
 	l := listen(t)
 	go ServeTTS(l, func(string) ([]byte, AudioFormat, error) { return nil, AudioFormat{}, nil },
-		BuildInfo("", "test-voice"), t.Logf)
+		StaticInfo(BuildInfo("", "test-voice")), t.Logf)
 	conn, r := dial(t, l)
 	writeInline(t, conn, "describe", "", nil)
 	ev, err := ReadEvent(r)

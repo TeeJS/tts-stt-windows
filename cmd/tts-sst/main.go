@@ -134,7 +134,7 @@ func loadSTT(dir, language string, threads int) (*engine.Recognizer, error) {
 // ---- mock engines: protocol testing without models or a tray ----
 
 func runMock(cfg config.Config) {
-	info := wyoming.BuildInfo("mock", "mock")
+	info := wyoming.StaticInfo(wyoming.BuildInfo("mock", "mock"))
 	sttL, err := net.Listen("tcp", fmt.Sprintf("%s:%d", cfg.Bind, cfg.STTPort))
 	if err != nil {
 		log.Fatal(err)
