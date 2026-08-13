@@ -10,21 +10,30 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// SystemLanguage returns the primary language code of the user's Windows display language
-// ("de" for de-DE, "pt" for pt-BR), or "" if it can't be determined. It seeds the first-run
-// language question so most people can accept the default rather than hunting for their own
-// language in a list of fifty.
-func SystemLanguage() string {
+// SystemLocale returns the user's Windows display language split into its primary language and
+// region ("de","DE" for de-DE; "en","GB" for en-GB), or empty strings if it can't be determined.
+// It seeds the first-run question so most people can accept the defaults rather than hunting
+// through fifty languages — and so an en-GB user is offered a British voice rather than whichever
+// English accent happens to sort first.
+func SystemLocale() (lang, region string) {
 	const localeNameMaxLength = 85 // LOCALE_NAME_MAX_LENGTH from winnls.h
 	proc := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetUserDefaultLocaleName")
 	buf := make([]uint16, localeNameMaxLength)
 	n, _, _ := proc.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if n == 0 {
-		return ""
+		return "", ""
 	}
-	name := syscall.UTF16ToString(buf[:n]) // e.g. "en-GB", "pt-BR", "zh-Hans-CN"
-	if i := strings.IndexAny(name, "-_"); i > 0 {
-		return strings.ToLower(name[:i])
+	// e.g. "en-GB", "pt-BR", "zh-Hans-CN" — the region is the last part when it's two letters.
+	parts := strings.Split(syscall.UTF16ToString(buf[:n]), "-")
+	lang = strings.ToLower(parts[0])
+	if last := parts[len(parts)-1]; len(parts) > 1 && len(last) == 2 {
+		region = strings.ToUpper(last)
 	}
-	return strings.ToLower(name)
+	return lang, region
+}
+
+// SystemLanguage is SystemLocale's language half.
+func SystemLanguage() string {
+	lang, _ := SystemLocale()
+	return lang
 }

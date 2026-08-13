@@ -123,6 +123,7 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 		"status":          svc.Status(),
 		"busy":            svc.Busy(),
 		"language":        svc.cfg.Language,
+		"systemRegion":    systemRegion,
 		"speed":           svc.cfg.Speed,
 		"setup":           svc.cfg.Setup,
 		"filterNonSpeech": svc.cfg.FilterNonSpeech,

@@ -81,9 +81,9 @@
 <div id="wrap">
   <nav>
     <h1>tts<span>·</span>sst</h1>
-    <button data-tab="voices" class="on">Voices</button>
+    <button data-tab="settings" class="on">Settings</button>
+    <button data-tab="voices">Voices</button>
     <button data-tab="speech">Speech recognition</button>
-    <button data-tab="settings">Settings</button>
     <div id="navStatus">Loading…</div>
   </nav>
   <main>
@@ -159,7 +159,9 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let state = null, tab = 'voices', busyPoll = null;
+// Settings opens first: it's what the tray item points at, and the model lists are a deliberate
+// trip rather than the landing page.
+let state = null, tab = 'settings', busyPoll = null;
 
 // ---- data ----
 async function load() {
@@ -308,8 +310,11 @@ function setupVoices() {
       .filter(Boolean).join(' · ');
     return `<option value="${m.id}">${m.name} — ${bits}</option>`;
   }).join('') || '<option value="">No voices for this language yet</option>';
-  // Default to a medium-quality voice: low is noticeably worse, high costs far more CPU per word.
-  const preferred = voices.find(m => m.quality === 'medium') || voices[0];
+  // Prefer a voice from the user's own region (en-GB rather than whichever English accent sorts
+  // first), and medium quality: low is noticeably worse, high costs far more CPU per word.
+  const medium = voices.filter(m => m.quality === 'medium');
+  const preferred = medium.find(m => m.region && m.region === state.systemRegion)
+                 || medium[0] || voices[0];
   if (preferred) sel.value = preferred.id;
   setupPlan();
 }

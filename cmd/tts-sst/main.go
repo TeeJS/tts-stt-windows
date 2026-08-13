@@ -19,6 +19,10 @@ import (
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
 )
 
+// systemRegion is the region half of the Windows locale ("GB"), used only to preselect a matching
+// accent in the first-run question. Not persisted: the user's explicit pick is what gets saved.
+var systemRegion string
+
 func main() {
 	var (
 		console    = flag.Bool("console", false, "run without the tray icon (dev/service use)")
@@ -39,9 +43,10 @@ func main() {
 		// Seed the first-run question with the Windows display language, so most users can accept
 		// the default instead of hunting through fifty options — and nobody has English assumed
 		// for them. Only languages we actually have a voice for are worth pre-selecting.
-		if sys := config.SystemLanguage(); sys != "" {
+		if sys, region := config.SystemLocale(); sys != "" {
 			if v, _ := models.DefaultsFor(sys); v.ID != "" {
 				cfg.Language = sys
+				systemRegion = region // the UI preselects a matching accent, e.g. en-GB over en-US
 			} else {
 				log.Printf("no voice available for the system language %q; first-run question defaults to English", sys)
 			}
