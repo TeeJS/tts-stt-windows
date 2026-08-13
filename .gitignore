@@ -3,3 +3,4 @@ build/
 *.dll
 dist/
 *.zip
+.signing/
