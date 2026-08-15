@@ -515,7 +515,11 @@ function renderMeetings() {
 function render() {
   $('#navStatus').textContent = state.busy || state.status;
   $('#busyBar').hidden = !state.busy;
-  if (state.busy) $('#busyText').textContent = state.busy + ' — services turn on when this finishes.';
+  // The "services turn on" reassurance only fits model downloads/loads (the
+  // post-setup wait); other busy work — a running transcription, an enrollment —
+  // happens while services are already up.
+  const settingUp = /^(Downloading|Loading)/.test(state.busy || '');
+  if (state.busy) $('#busyText').textContent = state.busy + (settingUp ? ' — services turn on when this finishes.' : '');
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   ['voices','speech','settings','meetings'].forEach(t => $('#tab-'+t).hidden = t !== tab);
   renderServiceToggles();
