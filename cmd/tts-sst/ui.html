@@ -66,6 +66,10 @@
   button.act:disabled { opacity:.5; cursor:default; }
 
   .empty { color:var(--dim); padding:30px 0; text-align:center; }
+  .enroll-status { display:flex; align-items:center; gap:10px; color:var(--dim); font-size:13.5px; margin:4px 2px 0; }
+  .spinner { width:15px; height:15px; border:2px solid var(--line); border-top-color:var(--accent);
+    border-radius:50%; animation:spin .7s linear infinite; flex:0 0 auto; }
+  @keyframes spin { to { transform:rotate(360deg); } }
   .row { display:flex; align-items:center; gap:14px; background:var(--panel); border:1px solid var(--line);
     border-radius:11px; padding:15px 16px; margin-bottom:10px; }
   .row label { flex:1; }
@@ -86,10 +90,10 @@
 <div id="wrap">
   <nav>
     <h1>tts<span>·</span>sst</h1>
-    <button data-tab="settings" class="on">Settings</button>
+    <button data-tab="settings" class="on">General</button>
     <button data-tab="voices">Voices (TTS)</button>
     <button data-tab="speech">Speech recognition (STT)</button>
-    <button data-tab="meetings">Meetings</button>
+    <button data-tab="meetings">Transcription</button>
     <div id="navStatus">Loading…</div>
   </nav>
   <main>
@@ -114,14 +118,10 @@
     </div>
 
     <div id="tab-meetings" hidden>
-      <h2>Meetings</h2>
+      <h2>Transcription</h2>
       <p class="sub">Batch speaker-diarized transcription: apps send a recording to this machine's IP and port and get back a transcript with named speakers.</p>
-      <div class="row">
-        <label for="meetOn">Meeting transcription service
-          <span class="hint" id="meetHint"></span>
-        </label>
-        <input type="checkbox" id="meetOn" style="width:20px;height:20px;accent-color:var(--accent)">
-      </div>
+      <p class="sub" id="meetHint"></p>
+      <div id="list-meetings-toggle"></div>
       <div class="row">
         <label for="diarThreshold">Speaker match strictness
           <span class="hint">Cosine score an enrolled voice must reach to be named (default 0.70). Lower names more speech but risks the wrong name; higher leaves more speakers unnamed.</span>
@@ -134,16 +134,17 @@
       <div class="group">Enroll a new speaker</div>
       <p class="sub">Give it 45+ seconds of one person speaking, recorded on the same setup your meetings are recorded on — that matters more than studio quality.</p>
       <div class="row">
-        <input type="text" id="enrollName" placeholder="Speaker name" style="flex:1;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit">
-        <input type="file" id="enrollFile" accept=".wav,.mp3,audio/*" style="color:var(--dim)">
+        <input type="text" id="enrollName" placeholder="Speaker name" style="flex:0 0 220px;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit">
+        <input type="file" id="enrollFile" accept=".wav,.mp3,audio/*" style="color:var(--dim);flex:1;min-width:0">
         <button class="act primary" id="enrollBtn">Enroll</button>
       </div>
+      <div id="enrollStatus" class="enroll-status" hidden><span class="spinner"></span><span id="enrollStatusText"></span></div>
       <div class="group">Models</div>
       <div id="list-meetings"></div>
     </div>
 
     <div id="tab-settings" hidden>
-      <h2>Settings</h2>
+      <h2>General</h2>
       <p class="sub">Applies immediately; stored in <code>%APPDATA%\tts-sst\config.json</code>.</p>
       <div class="row">
         <label for="setLang">My language
@@ -290,12 +291,10 @@ function card(m) {
   el.querySelector('.meta').textContent = bits.join(' · ');
 
   const actions = el.querySelector('.actions');
-  // Diarization models aren't switched by hand — the meetings service downloads and
-  // uses its configured pair automatically. Their cards are status only.
-  if (m.kind === 'diar') {
-    if (m.installed) el.querySelector('.title').insertAdjacentHTML('beforeend', '<span class="badge">Downloaded</span>');
-    return el;
-  }
+  // Diarization models aren't switched by hand — the transcription service downloads and
+  // uses its configured pair automatically. Their cards are status only (the "Downloaded"
+  // badge from the template above is enough).
+  if (m.kind === 'diar') return el;
   if (!m.active) {
     const use = document.createElement('button');
     use.className = 'act' + (m.installed ? ' primary' : '');
@@ -359,15 +358,52 @@ function renderList(kind, listEl, q, langSel) {
   section('Available to download', rest);
 }
 
-function renderMeetings() {
-  $('#meetOn').checked = !!state.meetings;
+// A card for one on/off state of the transcription service, styled and wired exactly
+// like the "Off" card and model cards on the Voices and Speech tabs.
+function meetingToggleCard(on) {
+  const active = on === !!state.meetings;
   const loop = state.bind === '127.0.0.1' || state.bind === 'localhost';
-  $('#meetHint').textContent = !state.meetings
-    ? 'Off. Turn on to accept recordings — models download automatically the first time.'
-    : loop
-      ? `Listening on http://127.0.0.1:${state.ports.meetings} — only THIS computer can send recordings. ` +
-        `To accept hand-offs from other machines, set "bind": "0.0.0.0" in config.json and restart.`
-      : `Listening on port ${state.ports.meetings} (bind ${state.bind}) — other machines can send recordings to this machine's IP.`;
+  const el = document.createElement('div');
+  el.className = 'card' + (active ? ' active' : '');
+  el.innerHTML = `
+    <div class="info">
+      <div class="title">
+        <span class="name">${on ? 'On' : 'Off'}</span>
+        ${active ? '<span class="badge on">Active</span>' : ''}
+      </div>
+      <div class="meta"></div>
+    </div>
+    <div class="actions"></div>`;
+  el.querySelector('.meta').textContent = on
+    ? (loop
+        ? `Accept recordings on 127.0.0.1:${state.ports.meetings} — this computer only`
+        : `Accept recordings on port ${state.ports.meetings} — reachable from other machines`)
+    : 'Stop transcription · frees its port';
+  if (!active) {
+    const use = document.createElement('button');
+    use.className = 'act' + (on ? ' primary' : '');
+    use.textContent = 'Use';
+    use.disabled = !!state.busy;
+    use.onclick = async () => {
+      use.disabled = true; use.textContent = on ? 'Starting…' : 'Stopping…';
+      await post('/api/meetings', {on}); load();
+    };
+    el.querySelector('.actions').appendChild(use);
+  }
+  return el;
+}
+
+function renderMeetings() {
+  const toggle = $('#list-meetings-toggle');
+  toggle.innerHTML = '';
+  toggle.appendChild(meetingToggleCard(false));
+  toggle.appendChild(meetingToggleCard(true));
+
+  const loop = state.bind === '127.0.0.1' || state.bind === 'localhost';
+  $('#meetHint').innerHTML = state.meetings && loop
+    ? `Only this computer can send recordings right now. To accept hand-offs from other machines, set <code>"bind": "0.0.0.0"</code> in config.json and restart.`
+    : '';
+  $('#meetHint').hidden = !($('#meetHint').innerHTML);
   if (document.activeElement !== $('#diarThreshold')) $('#diarThreshold').value = state.diarThreshold;
 
   const list = $('#speakerList');
@@ -484,7 +520,6 @@ $('#setLang').onchange = async e => {
 $('#speed').oninput = e => { $('#speedVal').textContent = Number(e.target.value).toFixed(2).replace(/0$/,'') + '×'; };
 $('#speed').onchange = async e => { await post('/api/settings', {speed: Number(e.target.value)}); };
 $('#filterNS').onchange = async e => { await post('/api/settings', {filterNonSpeech: e.target.checked}); };
-$('#meetOn').onchange = async e => { await post('/api/meetings', {on: e.target.checked}); load(); };
 $('#diarThreshold').onchange = async e => {
   const t = Number(e.target.value);
   if (t >= 0.3 && t <= 0.95) await post('/api/meetings', {threshold: t});
@@ -494,16 +529,27 @@ $('#enrollBtn').onclick = async () => {
   const file = $('#enrollFile').files[0];
   if (!name) { alert('Enter the speaker\'s name.'); return; }
   if (!file) { alert('Pick a recording of them speaking.'); return; }
-  const btn = $('#enrollBtn');
+  const btn = $('#enrollBtn'), status = $('#enrollStatus'), spin = status.querySelector('.spinner');
   btn.disabled = true; btn.textContent = 'Enrolling…';
+  spin.hidden = false;
+  $('#enrollStatusText').textContent = `Building ${name}'s voice profile — this takes a few seconds…`;
+  status.hidden = false;
   const fd = new FormData();
   fd.append('name', name);
   fd.append('audio', file);
-  const r = await fetch('/api/enroll', {method:'POST', body: fd});
-  btn.disabled = false; btn.textContent = 'Enroll';
-  if (!r.ok) { alert(await r.text()); return; }
-  $('#enrollName').value = ''; $('#enrollFile').value = '';
-  load();
+  try {
+    const r = await fetch('/api/enroll', {method:'POST', body: fd});
+    if (!r.ok) { alert(await r.text()); status.hidden = true; return; }
+    $('#enrollName').value = ''; $('#enrollFile').value = '';
+    spin.hidden = true;
+    $('#enrollStatusText').textContent = `✓ Enrolled ${name}.`;
+    load();
+    setTimeout(() => { status.hidden = true; }, 2500);
+  } catch (e) {
+    alert(e.message); status.hidden = true;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Enroll';
+  }
 };
 $('#testBtn').onclick = async () => {
   const btn = $('#testBtn');
