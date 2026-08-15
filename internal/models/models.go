@@ -26,8 +26,9 @@ var catalogJSON []byte
 type Kind string
 
 const (
-	STT Kind = "stt"
-	TTS Kind = "tts"
+	STT  Kind = "stt"
+	TTS  Kind = "tts"
+	Diar Kind = "diar" // speaker diarization / embedding models for the meetings service
 )
 
 // Model is one installable voice or speech-recognition model.
@@ -168,6 +169,27 @@ type Progress func(id string, done, total int64)
 func Install(root string, m Model, progress Progress) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
+	}
+	// Some models (speaker embeddings) are published as a bare .onnx file rather
+	// than an archive: download into a temp dir and rename it into place whole.
+	if strings.HasSuffix(m.URL, ".onnx") {
+		tmpDir := filepath.Join(root, m.Dir+".extracting")
+		if err := os.RemoveAll(tmpDir); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+			return err
+		}
+		dest := filepath.Join(tmpDir, filepath.Base(m.URL))
+		if err := download(m, dest, progress); err != nil {
+			os.RemoveAll(tmpDir)
+			return err
+		}
+		if err := os.Rename(tmpDir, filepath.Join(root, m.Dir)); err != nil {
+			os.RemoveAll(tmpDir)
+			return err
+		}
+		return nil
 	}
 	archive := filepath.Join(root, m.ID+".part")
 	defer os.Remove(archive)

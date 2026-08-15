@@ -25,10 +25,24 @@ type Config struct {
 	// FilterNonSpeech drops transcripts that are only a model's description of a sound —
 	// "(clicking)", "[BLANK_AUDIO]" — instead of passing them on as if they were spoken.
 	FilterNonSpeech bool `json:"filterNonSpeech"`
+
+	// Meetings switches the meeting-diarization HTTP service: "on", or "" / "off" for off.
+	// Unlike STT/TTS this is not a model id — the service needs several models at once, so
+	// on/off and the model choices are separate fields.
+	Meetings       string `json:"meetings"`
+	MeetingsPort   int    `json:"meetingsPort"`
+	MeetingsSTT    string `json:"meetingsSTT"`    // catalog id; "" = share the active STT when usable, else the default STT model
+	DiarSegModel   string `json:"diarSegModel"`   // catalog id; "" = default segmentation model
+	DiarEmbedModel string `json:"diarEmbedModel"` // catalog id; "" = default speaker-embedding model
+	// DiarThreshold is the speaker-identification cosine cutoff (per-request override allowed).
+	// DiarClusterThreshold tunes sherpa's clustering — a different knob, config-level only.
+	DiarThreshold        float32 `json:"diarThreshold"`
+	DiarClusterThreshold float32 `json:"diarClusterThreshold"`
 }
 
 func Defaults() Config {
-	return Config{Bind: "127.0.0.1", STTPort: 10300, TTSPort: 10200, Language: "en", Speed: 1.0, FilterNonSpeech: true}
+	return Config{Bind: "127.0.0.1", STTPort: 10300, TTSPort: 10200, Language: "en", Speed: 1.0, FilterNonSpeech: true,
+		MeetingsPort: 10301, DiarThreshold: 0.70, DiarClusterThreshold: 0.5}
 }
 
 // Dir is the app's data directory (%APPDATA%\tts-sst), created on demand.
@@ -67,6 +81,15 @@ func Load() Config {
 	}
 	if c.Speed <= 0 {
 		c.Speed = 1.0
+	}
+	if c.MeetingsPort <= 0 {
+		c.MeetingsPort = 10301
+	}
+	if c.DiarThreshold <= 0 {
+		c.DiarThreshold = 0.70
+	}
+	if c.DiarClusterThreshold <= 0 {
+		c.DiarClusterThreshold = 0.5
 	}
 	return c
 }

@@ -14,6 +14,7 @@ require (
 	github.com/getlantern/systray v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-stack/stack v1.8.0 // indirect
+	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-linux v1.13.5 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.5 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-windows v1.13.5 // indirect

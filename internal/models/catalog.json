@@ -3310,6 +3310,32 @@
    "size": 14016124,
    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-zh_CN-xiao_ya-medium-int8.tar.bz2",
    "dir": "vits-piper-zh_CN-xiao_ya-medium-int8"
+  },
+  {
+   "id": "pyannote-segmentation-3-0",
+   "kind": "diar",
+   "family": "segmentation",
+   "name": "Pyannote segmentation 3.0",
+   "langs": [
+    "multi"
+   ],
+   "size": 6958444,
+   "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+   "dir": "sherpa-onnx-pyannote-segmentation-3-0",
+   "notes": "Splits a meeting recording into speaker turns."
+  },
+  {
+   "id": "eres2net-en-voxceleb",
+   "kind": "diar",
+   "family": "embedding",
+   "name": "ERes2Net speaker embedding",
+   "langs": [
+    "multi"
+   ],
+   "size": 26485263,
+   "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
+   "dir": "eres2net-en-voxceleb",
+   "notes": "Voice fingerprints for recognizing enrolled speakers."
   }
  ]
 }

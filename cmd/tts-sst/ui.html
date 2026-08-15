@@ -89,6 +89,7 @@
     <button data-tab="settings" class="on">Settings</button>
     <button data-tab="voices">Voices (TTS)</button>
     <button data-tab="speech">Speech recognition (STT)</button>
+    <button data-tab="meetings">Meetings</button>
     <div id="navStatus">Loading…</div>
   </nav>
   <main>
@@ -110,6 +111,35 @@
         <select id="lang-speech"></select>
       </div>
       <div id="list-speech"></div>
+    </div>
+
+    <div id="tab-meetings" hidden>
+      <h2>Meetings</h2>
+      <p class="sub">Batch speaker-diarized transcription: apps send a recording to this machine's IP and port and get back a transcript with named speakers.</p>
+      <div class="row">
+        <label for="meetOn">Meeting transcription service
+          <span class="hint" id="meetHint"></span>
+        </label>
+        <input type="checkbox" id="meetOn" style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="row">
+        <label for="diarThreshold">Speaker match strictness
+          <span class="hint">Cosine score an enrolled voice must reach to be named (default 0.70). Lower names more speech but risks the wrong name; higher leaves more speakers unnamed.</span>
+        </label>
+        <input type="number" id="diarThreshold" min="0.3" max="0.95" step="0.05" style="width:90px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit">
+      </div>
+      <div class="group">Enrolled speakers</div>
+      <p class="sub">Voice profiles used to put names on speakers. Stored as portable files in <code>%APPDATA%\tts-sst\enrollments</code> — copy the folder to back them up or move machines.</p>
+      <div id="speakerList"></div>
+      <div class="group">Enroll a new speaker</div>
+      <p class="sub">Give it 45+ seconds of one person speaking, recorded on the same setup your meetings are recorded on — that matters more than studio quality.</p>
+      <div class="row">
+        <input type="text" id="enrollName" placeholder="Speaker name" style="flex:1;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit">
+        <input type="file" id="enrollFile" accept=".wav,.mp3,audio/*" style="color:var(--dim)">
+        <button class="act primary" id="enrollBtn">Enroll</button>
+      </div>
+      <div class="group">Models</div>
+      <div id="list-meetings"></div>
     </div>
 
     <div id="tab-settings" hidden>
@@ -260,6 +290,12 @@ function card(m) {
   el.querySelector('.meta').textContent = bits.join(' · ');
 
   const actions = el.querySelector('.actions');
+  // Diarization models aren't switched by hand — the meetings service downloads and
+  // uses its configured pair automatically. Their cards are status only.
+  if (m.kind === 'diar') {
+    if (m.installed) el.querySelector('.title').insertAdjacentHTML('beforeend', '<span class="badge">Downloaded</span>');
+    return el;
+  }
   if (!m.active) {
     const use = document.createElement('button');
     use.className = 'act' + (m.installed ? ' primary' : '');
@@ -323,10 +359,53 @@ function renderList(kind, listEl, q, langSel) {
   section('Available to download', rest);
 }
 
+function renderMeetings() {
+  $('#meetOn').checked = !!state.meetings;
+  const loop = state.bind === '127.0.0.1' || state.bind === 'localhost';
+  $('#meetHint').textContent = !state.meetings
+    ? 'Off. Turn on to accept recordings — models download automatically the first time.'
+    : loop
+      ? `Listening on http://127.0.0.1:${state.ports.meetings} — only THIS computer can send recordings. ` +
+        `To accept hand-offs from other machines, set "bind": "0.0.0.0" in config.json and restart.`
+      : `Listening on port ${state.ports.meetings} (bind ${state.bind}) — other machines can send recordings to this machine's IP.`;
+  if (document.activeElement !== $('#diarThreshold')) $('#diarThreshold').value = state.diarThreshold;
+
+  const list = $('#speakerList');
+  list.innerHTML = '';
+  if (!state.speakers || !state.speakers.length) {
+    list.innerHTML = '<div class="empty">No speakers enrolled yet.</div>';
+  } else {
+    state.speakers.forEach(s => {
+      const el = document.createElement('div');
+      el.className = 'card';
+      el.innerHTML = `<div class="info"><div class="title"><span class="name"></span></div><div class="meta"></div></div>
+        <div class="actions">
+          <button class="act rename">Rename</button>
+          <button class="act link del">Delete</button>
+        </div>`;
+      el.querySelector('.name').textContent = s.name;
+      el.querySelector('.meta').textContent = s.enrolled_at ? 'enrolled ' + s.enrolled_at.slice(0,10) : '';
+      el.querySelector('.rename').onclick = async () => {
+        const to = prompt(`Rename ${s.name} to:`, s.name);
+        if (to && to !== s.name) { await post('/api/speaker-action', {action:'rename', name:s.name, newName:to}); load(); }
+      };
+      el.querySelector('.del').onclick = async () => {
+        if (confirm(`Delete the voice profile for ${s.name}?`)) { await post('/api/speaker-action', {action:'delete', name:s.name}); load(); }
+      };
+      list.appendChild(el);
+    });
+  }
+
+  const ml = $('#list-meetings');
+  ml.innerHTML = '';
+  state.models.filter(m => m.kind === 'diar').forEach(m => ml.appendChild(card(m)));
+}
+
 function render() {
   $('#navStatus').textContent = state.busy || state.status;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  ['voices','speech','settings'].forEach(t => $('#tab-'+t).hidden = t !== tab);
+  ['voices','speech','settings','meetings'].forEach(t => $('#tab-'+t).hidden = t !== tab);
+  renderMeetings();
 
   renderList('tts', $('#list-voices'), $('#q-voices'), $('#lang-voices'));
   renderList('stt', $('#list-speech'), $('#q-speech'), $('#lang-speech'));
@@ -405,6 +484,27 @@ $('#setLang').onchange = async e => {
 $('#speed').oninput = e => { $('#speedVal').textContent = Number(e.target.value).toFixed(2).replace(/0$/,'') + '×'; };
 $('#speed').onchange = async e => { await post('/api/settings', {speed: Number(e.target.value)}); };
 $('#filterNS').onchange = async e => { await post('/api/settings', {filterNonSpeech: e.target.checked}); };
+$('#meetOn').onchange = async e => { await post('/api/meetings', {on: e.target.checked}); load(); };
+$('#diarThreshold').onchange = async e => {
+  const t = Number(e.target.value);
+  if (t >= 0.3 && t <= 0.95) await post('/api/meetings', {threshold: t});
+};
+$('#enrollBtn').onclick = async () => {
+  const name = $('#enrollName').value.trim();
+  const file = $('#enrollFile').files[0];
+  if (!name) { alert('Enter the speaker\'s name.'); return; }
+  if (!file) { alert('Pick a recording of them speaking.'); return; }
+  const btn = $('#enrollBtn');
+  btn.disabled = true; btn.textContent = 'Enrolling…';
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('audio', file);
+  const r = await fetch('/api/enroll', {method:'POST', body: fd});
+  btn.disabled = false; btn.textContent = 'Enroll';
+  if (!r.ok) { alert(await r.text()); return; }
+  $('#enrollName').value = ''; $('#enrollFile').value = '';
+  load();
+};
 $('#testBtn').onclick = async () => {
   const btn = $('#testBtn');
   btn.disabled = true; btn.textContent = 'Speaking…';

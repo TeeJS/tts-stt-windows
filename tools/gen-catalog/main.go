@@ -39,6 +39,30 @@ type Entry struct {
 	Notes   string   `json:"notes,omitempty"`
 }
 
+// diarEntries are the meeting-diarization models: static, because two hand-picked
+// assets don't justify scraping a third release. The embedding model choice is
+// deliberate — see internal/diarize/diarize.go: eres2net won a measured shootout
+// (wespeaker resnet34 doesn't discriminate on real recordings; titanet costs 4x
+// the download for no gain). The typo in "speaker-recongition-models" is real.
+func diarEntries() []Entry {
+	return []Entry{
+		{
+			ID: "pyannote-segmentation-3-0", Kind: "diar", Family: "segmentation",
+			Name: "Pyannote segmentation 3.0", Langs: []string{"multi"}, Size: 6958444,
+			URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+			Dir: "sherpa-onnx-pyannote-segmentation-3-0",
+			Notes: "Splits a meeting recording into speaker turns.",
+		},
+		{
+			ID: "eres2net-en-voxceleb", Kind: "diar", Family: "embedding",
+			Name: "ERes2Net speaker embedding", Langs: []string{"multi"}, Size: 26485263,
+			URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
+			Dir: "eres2net-en-voxceleb",
+			Notes: "Voice fingerprints for recognizing enrolled speakers.",
+		},
+	}
+}
+
 type ghRelease struct {
 	Assets []struct {
 		Name               string `json:"name"`
@@ -54,6 +78,7 @@ func main() {
 	var entries []Entry
 	entries = append(entries, parseTTS(tts)...)
 	entries = append(entries, parseSTT(asr)...)
+	entries = append(entries, diarEntries()...)
 
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Kind != entries[j].Kind {

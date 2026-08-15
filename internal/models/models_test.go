@@ -99,6 +99,7 @@ func TestCatalogSane(t *testing.T) {
 			voices++
 		case STT:
 			speech++
+		case Diar:
 		default:
 			t.Errorf("bad kind %q on %s", m.Kind, m.ID)
 		}

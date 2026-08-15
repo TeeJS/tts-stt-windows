@@ -3,14 +3,19 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
 
+	"github.com/TeeJS/tts-stt-windows/internal/config"
+	"github.com/TeeJS/tts-stt-windows/internal/diarize"
 	"github.com/TeeJS/tts-stt-windows/internal/models"
 )
 
@@ -43,6 +48,9 @@ func startUI(svc *service) (*uiServer, error) {
 	mux.HandleFunc("/api/remove", u.guard(u.handleRemove))
 	mux.HandleFunc("/api/settings", u.guard(u.handleSettings))
 	mux.HandleFunc("/api/test", u.guard(u.handleTest))
+	mux.HandleFunc("/api/meetings", u.guard(u.handleMeetings))
+	mux.HandleFunc("/api/speaker-action", u.guard(u.handleSpeakerAction))
+	mux.HandleFunc("/api/enroll", u.guard(u.handleUIEnroll))
 	go func() {
 		if err := http.Serve(l, mux); err != nil {
 			log.Printf("settings UI stopped: %v", err)
@@ -137,6 +145,12 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 			Active:    m.ID == svc.ActiveTTS() || m.ID == svc.ActiveSTT(),
 		})
 	}
+	speakers := []diarize.SpeakerDetail{}
+	if store, err := diarize.NewEnrollmentStore(enrollmentsDir()); err == nil {
+		if d, err := store.ListDetails(); err == nil && d != nil {
+			speakers = d
+		}
+	}
 	writeJSON(w, map[string]any{
 		"status":          svc.Status(),
 		"busy":            svc.Busy(),
@@ -150,8 +164,115 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 		"activeSTT":       svc.ActiveSTT(),
 		"languages":       models.Languages(),
 		"models":          out,
-		"ports":           map[string]int{"stt": svc.cfg.STTPort, "tts": svc.cfg.TTSPort},
+		"ports":           map[string]int{"stt": svc.cfg.STTPort, "tts": svc.cfg.TTSPort, "meetings": svc.cfg.MeetingsPort},
+		"meetings":        svc.meetingsOn(),
+		"bind":            svc.cfg.Bind,
+		"diarThreshold":   svc.cfg.DiarThreshold,
+		"speakers":        speakers,
 	})
+}
+
+// enrollmentsDir is where voice profiles live — one portable .npy per speaker;
+// back up or move machines by copying the folder.
+func enrollmentsDir() string { return filepath.Join(config.Dir(), "enrollments") }
+
+// handleMeetings turns the meetings service on/off and applies its settings.
+func (u *uiServer) handleMeetings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		On        *bool    `json:"on"`
+		Threshold *float32 `json:"threshold"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if body.Threshold != nil && *body.Threshold > 0 && *body.Threshold < 1 {
+		u.svc.SetDiarThreshold(*body.Threshold)
+	}
+	if body.On != nil {
+		on := *body.On
+		go func() {
+			if err := u.svc.SwitchMeetings(on); err != nil {
+				log.Printf("meetings switch: %v", err)
+			}
+		}()
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleSpeakerAction renames or deletes an enrolled voice profile.
+func (u *uiServer) handleSpeakerAction(w http.ResponseWriter, r *http.Request) {
+	var body struct{ Action, Name, NewName string }
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	store, err := diarize.NewEnrollmentStore(enrollmentsDir())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	switch body.Action {
+	case "rename":
+		err = store.Rename(body.Name, body.NewName)
+	case "delete":
+		err = store.Delete(body.Name)
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleUIEnroll enrolls a speaker from the settings page: a name and a recording,
+// no client scripts needed. Requires the meetings service to be on (it owns the
+// embedding model).
+func (u *uiServer) handleUIEnroll(w http.ResponseWriter, r *http.Request) {
+	u.svc.mu.RLock()
+	diarSvc := u.svc.diarSvc
+	u.svc.mu.RUnlock()
+	if diarSvc == nil {
+		http.Error(w, "turn on the meetings service first — it loads the voice models enrollment needs", http.StatusConflict)
+		return
+	}
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		http.Error(w, "bad upload: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := r.FormValue("name")
+	if name == "" {
+		http.Error(w, "speaker name is required", http.StatusBadRequest)
+		return
+	}
+	f, _, err := r.FormFile("audio")
+	if err != nil {
+		http.Error(w, "recording file is required", http.StatusBadRequest)
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	samples, err := diarize.DecodeAudio(data)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := diarSvc.Enroll(name, samples); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, diarize.ErrBadName) {
+			code = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 // handleSelect activates a model, downloading it first if necessary. It returns as soon as the

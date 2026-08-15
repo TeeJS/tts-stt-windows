@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/TeeJS/tts-stt-windows/internal/config"
+	"github.com/TeeJS/tts-stt-windows/internal/diarize"
 	"github.com/TeeJS/tts-stt-windows/internal/engine"
 	"github.com/TeeJS/tts-stt-windows/internal/models"
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
@@ -49,12 +50,18 @@ type service struct {
 	busy     string // non-empty while a download/load is in flight, for the UI
 	onChange func() // tray/UI refresh hook
 
+	// The meetings service (batch diarization over HTTP) — nil while off.
+	diar    *diarize.Diarizer
+	diarSvc *diarize.Service
+	diarRec *engine.Recognizer // dedicated transcriber; nil when sharing the live STT
+
 	// Listeners are held so a service can be switched off at runtime: closing the listener makes
 	// its accept loop return, which frees the port instead of leaving something bound that answers
 	// with nothing. Guarded by their own mutex, since enabling one blocks on a model load.
-	lnMu  sync.Mutex
-	sttLn net.Listener
-	ttsLn net.Listener
+	lnMu   sync.Mutex
+	sttLn  net.Listener
+	ttsLn  net.Listener
+	meetLn net.Listener
 }
 
 func newService(cfg config.Config, modelsDir string, threads int) *service {
@@ -89,11 +96,15 @@ func (s *service) setBusy(what string) {
 // running composes the steady-state status line from whatever is actually loaded.
 func (s *service) running() {
 	stt, tts := s.ActiveSTT(), s.ActiveTTS()
-	if isOff(stt) && isOff(tts) {
-		s.setStatus("Both services are off — nothing is being served")
+	if isOff(stt) && isOff(tts) && !s.meetingsOn() {
+		s.setStatus("All services are off — nothing is being served")
 		return
 	}
-	s.setStatus("Running — %s · %s", label(stt), label(tts))
+	line := fmt.Sprintf("Running — %s · %s", label(stt), label(tts))
+	if s.meetingsOn() {
+		line += fmt.Sprintf(" · meetings :%d", s.cfg.MeetingsPort)
+	}
+	s.setStatus("%s", line)
 }
 
 func label(id string) string {
@@ -155,7 +166,13 @@ func (s *service) Start() {
 		if err := s.useSTT(sttID); err != nil {
 			s.setStatus("Speech model load failed: %v", err)
 		}
+		if s.meetingsOn() {
+			if err := s.useMeetings(true); err != nil {
+				s.setStatus("Meetings service load failed: %v", err)
+			}
+		}
 		s.syncListeners()
+		s.syncMeetingsListener()
 		s.running()
 	}()
 }

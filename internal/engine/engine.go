@@ -316,6 +316,50 @@ func (r *Recognizer) Transcribe(pcm []byte, sampleRate int) (string, error) {
 	return stream.GetResult().Text, nil
 }
 
+// Token is one decoded subword with its timing (seconds from the start of the
+// audio passed in). End is zero when the model emits no durations.
+type Token struct {
+	Text       string
+	Start, End float32
+}
+
+// TranscribeTokens is Transcribe plus per-token timestamps, for callers that need
+// word-level timing (meeting diarization). Not every model family produces
+// timestamps — the returned slice is empty when this one doesn't, and callers
+// must fall back to timing-free handling.
+func (r *Recognizer) TranscribeTokens(samples []float32, sampleRate int) (string, []Token) {
+	if len(samples) == 0 {
+		return "", nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rec == nil { // closed underneath us (engine swapped mid-job)
+		return "", nil
+	}
+	stream := sherpa.NewOfflineStream(r.rec)
+	defer sherpa.DeleteOfflineStream(stream)
+	stream.AcceptWaveform(sampleRate, samples)
+	r.rec.Decode(stream)
+	res := stream.GetResult()
+	if len(res.Timestamps) != len(res.Tokens) {
+		return res.Text, nil
+	}
+	toks := make([]Token, len(res.Tokens))
+	for i := range res.Tokens {
+		t := Token{Text: res.Tokens[i], Start: res.Timestamps[i]}
+		switch {
+		case i < len(res.Durations) && res.Durations[i] > 0:
+			t.End = t.Start + res.Durations[i]
+		case i+1 < len(res.Timestamps):
+			t.End = res.Timestamps[i+1]
+		default:
+			t.End = t.Start
+		}
+		toks[i] = t
+	}
+	return res.Text, toks
+}
+
 // Close is safe on a nil receiver — see PiperTTS.Close.
 func (r *Recognizer) Close() {
 	if r == nil {
