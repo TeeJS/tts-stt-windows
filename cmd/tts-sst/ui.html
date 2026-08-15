@@ -67,6 +67,9 @@
 
   .empty { color:var(--dim); padding:30px 0; text-align:center; }
   .enroll-status { display:flex; align-items:center; gap:10px; color:var(--dim); font-size:13.5px; margin:4px 2px 0; }
+  /* display:flex on the class outranks the browser's [hidden]{display:none} — without
+     this the idle spinner showed before any enrollment had started. */
+  .enroll-status[hidden] { display:none; }
   .spinner { width:15px; height:15px; border:2px solid var(--line); border-top-color:var(--accent);
     border-radius:50%; animation:spin .7s linear infinite; flex:0 0 auto; }
   @keyframes spin { to { transform:rotate(360deg); } }
@@ -141,7 +144,7 @@
       <div class="group">Enroll a new speaker</div>
       <p class="sub">Give it 45+ seconds of one person speaking, recorded on the same setup your meetings are recorded on — that matters more than studio quality.</p>
       <div class="row">
-        <input type="text" id="enrollName" placeholder="Speaker name" style="flex:0 0 220px;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit">
+        <input type="text" id="enrollName" placeholder="Speaker name" style="flex:0 1 320px;min-width:180px;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit">
         <input type="file" id="enrollFile" accept=".wav,.mp3,audio/*" style="color:var(--dim);flex:1;min-width:0">
         <button class="act primary" id="enrollBtn">Enroll</button>
       </div>
