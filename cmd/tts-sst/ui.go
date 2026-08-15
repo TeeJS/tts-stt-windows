@@ -347,6 +347,13 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		Speed           *float32 `json:"speed"`
 		Setup           *bool    `json:"setup"`
 		FilterNonSpeech *bool    `json:"filterNonSpeech"`
+		// Which services the setup card enables. Absent (older page) = the
+		// pre-choice behavior: voice and dictation on, transcription off.
+		Services *struct {
+			TTS      bool `json:"tts"`
+			STT      bool `json:"stt"`
+			Meetings bool `json:"meetings"`
+		} `json:"services"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -367,7 +374,11 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	// Answering the language question releases the service to pick and download models for the
 	// language the user actually speaks — on first run, and again whenever they re-run it.
 	if body.Setup != nil && *body.Setup {
-		u.svc.CompleteSetup(body.Voice)
+		tts, stt, meetings := true, true, false
+		if body.Services != nil {
+			tts, stt, meetings = body.Services.TTS, body.Services.STT, body.Services.Meetings
+		}
+		u.svc.CompleteSetup(body.Voice, tts, stt, meetings)
 	}
 	writeJSON(w, map[string]any{"ok": true})
 }

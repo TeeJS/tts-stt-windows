@@ -84,6 +84,13 @@
   #setupCard h2 { margin-bottom:8px; }
   #setupCard p { color:var(--dim); font-size:13.5px; }
   #setupCard select { width:100%; margin:14px 0 18px; padding:11px 12px; }
+  .svc-pick { display:flex; flex-direction:column; gap:10px; margin:10px 0 18px; }
+  .svc-pick label { display:flex; gap:11px; align-items:flex-start; cursor:pointer;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:11px 13px; }
+  .svc-pick label:has(input:checked) { border-color:var(--accent); }
+  .svc-pick input { width:18px; height:18px; accent-color:var(--accent); margin-top:2px; flex:0 0 auto; }
+  .svc-pick .hint { display:block; color:var(--dim); font-size:12.5px; font-weight:400; }
+  #setupCard #setupVoiceRow select { margin-top:4px; }
 </style>
 </head>
 <body>
@@ -181,10 +188,18 @@
 <div id="setup" class="hidden">
   <div id="setupCard">
     <h2>What language do you speak?</h2>
-    <p>tts-sst will download a voice and a speech model that fit. You can change this any time, add more languages later, or pick different models yourself.</p>
+    <p>tts-sst downloads models that fit your language. You can change any of this later from Settings.</p>
     <select id="setupLang"></select>
-    <label class="hint" for="setupVoice">Voice</label>
-    <select id="setupVoice"></select>
+    <label class="hint">What should this computer do?</label>
+    <div class="svc-pick">
+      <label><input type="checkbox" id="svcTTS" checked> <span><b>Speak text out loud</b><span class="hint">A voice reads replies and announcements to you (text-to-speech).</span></span></label>
+      <label><input type="checkbox" id="svcSTT" checked> <span><b>Turn your speech into text</b><span class="hint">Dictation: apps send your voice here and get words back (speech-to-text).</span></span></label>
+      <label><input type="checkbox" id="svcMeet"> <span><b>Transcribe meeting recordings</b><span class="hint">Apps send a recording and get back a transcript with named speakers.</span></span></label>
+    </div>
+    <div id="setupVoiceRow">
+      <label class="hint" for="setupVoice">Voice</label>
+      <select id="setupVoice"></select>
+    </div>
     <p id="setupPlan"></p>
     <div style="display:flex;gap:10px">
       <button class="act primary" id="setupGo">Get started</button>
@@ -491,15 +506,34 @@ function setupVoices() {
 }
 
 // Spell out what "Get started" will actually download, so nobody is surprised by a 500MB fetch.
+// Only the checked services count: an unchecked service downloads nothing and stays off.
 function setupPlan() {
   const lang = $('#setupLang').value;
+  const wantTTS = $('#svcTTS').checked, wantSTT = $('#svcSTT').checked, wantMeet = $('#svcMeet').checked;
+  $('#setupVoiceRow').hidden = !wantTTS;
   const voice = state.models.find(m => m.id === $('#setupVoice').value);
   const forSTT = state.models.filter(m => m.kind === 'stt' && (m.langs.includes(lang) || m.langs.includes('multi')));
   const pickSTT = forSTT.find(m => m.id === 'parakeet-tdt-0.6b-v3') || forSTT.sort((a,b) => a.size - b.size)[0];
   const mb = m => m ? Math.round(m.size / 1048576) + ' MB' : '';
-  $('#setupPlan').textContent = voice && pickSTT
-    ? `Will download ${mb(voice)} for the voice and ${pickSTT.name} (${mb(pickSTT)}) for speech recognition.`
-    : 'No models are available for that language yet.';
+
+  if (!wantTTS && !wantSTT && !wantMeet) {
+    $('#setupPlan').textContent = 'Nothing will run or download — you can turn services on later in Settings.';
+    return;
+  }
+  const parts = [];
+  let missing = false;
+  if (wantTTS) { voice ? parts.push(`${mb(voice)} for the voice`) : missing = true; }
+  if (wantSTT || wantMeet) {
+    // Transcribing meetings needs a speech model too, even with dictation off.
+    pickSTT ? parts.push(`${pickSTT.name} (${mb(pickSTT)}) for speech recognition`) : missing = true;
+  }
+  if (wantMeet) {
+    const diarMB = Math.round(state.models.filter(m => m.kind === 'diar').reduce((s, m) => s + m.size, 0) / 1048576);
+    parts.push(`${diarMB} MB for speaker recognition`);
+  }
+  $('#setupPlan').textContent = missing
+    ? 'No models are available for that language yet.'
+    : 'Will download ' + parts.join(', ') + '.';
 }
 
 // ---- events ----
@@ -565,10 +599,15 @@ $('#testBtn').onclick = async () => {
   }
 };
 // Re-open the first-run question on demand. It only changes anything once "Get started" is
-// pressed, so opening it is safe — Cancel leaves the current voice and model alone.
+// pressed, so opening it is safe — Cancel leaves the current voice and model alone. The
+// service checkboxes seed from what is running right now, so re-running with everything
+// unchanged is a no-op rather than a surprise reset.
 $('#rerunSetup').onclick = () => {
   langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
   $('#setupLang').value = state.language;
+  $('#svcTTS').checked = state.activeTTS !== 'off';
+  $('#svcSTT').checked = state.activeSTT !== 'off';
+  $('#svcMeet').checked = !!state.meetings;
   setupPlan();
   $('#setupCancel').hidden = false;
   $('#setup').classList.remove('hidden');
@@ -576,10 +615,16 @@ $('#rerunSetup').onclick = () => {
 $('#setupCancel').onclick = () => $('#setup').classList.add('hidden');
 $('#setupLang').onchange = setupVoices;
 $('#setupVoice').onchange = setupPlan;
+['#svcTTS','#svcSTT','#svcMeet'].forEach(s => $(s).onchange = setupPlan);
 $('#setupGo').onclick = async () => {
   const btn = $('#setupGo');
   btn.disabled = true; btn.textContent = 'Starting…';
-  await post('/api/settings', {language: $('#setupLang').value, voice: $('#setupVoice').value, setup: true});
+  await post('/api/settings', {
+    language: $('#setupLang').value,
+    voice: $('#svcTTS').checked ? $('#setupVoice').value : '',
+    setup: true,
+    services: {tts: $('#svcTTS').checked, stt: $('#svcSTT').checked, meetings: $('#svcMeet').checked},
+  });
   $('#setup').classList.add('hidden');
   btn.disabled = false; btn.textContent = 'Get started';
   load();

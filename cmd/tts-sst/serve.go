@@ -424,14 +424,35 @@ func (s *service) SetFilterNonSpeech(on bool) {
 	config.Save(s.cfg)
 }
 
-// CompleteSetup answers the language question — on first launch, or again later from Settings —
-// and loads a voice and speech model for the chosen language. Clearing the current picks is what
-// makes a re-run meaningful: otherwise it would keep the models chosen for the old language.
-func (s *service) CompleteSetup(voice string) {
+// CompleteSetup answers the first-launch questions — language plus which services to
+// run — and loads models for the chosen language. Clearing the current picks is what
+// makes a re-run meaningful: otherwise it would keep the models chosen for the old
+// language. A service the user left unchecked is stored as an explicit "off", not a
+// default, so nothing downloads for it.
+func (s *service) CompleteSetup(voice string, tts, stt, meetings bool) {
 	s.cfg.Setup = true
-	s.cfg.TTSVoice = voice // "" leaves Start to pick a default for the language
-	s.cfg.STTModel = ""
+	if tts {
+		s.cfg.TTSVoice = voice // "" leaves Start to pick a default for the language
+	} else {
+		s.cfg.TTSVoice = offID
+	}
+	if stt {
+		s.cfg.STTModel = ""
+	} else {
+		s.cfg.STTModel = offID
+	}
+	if meetings {
+		s.cfg.Meetings = "on"
+	} else {
+		s.cfg.Meetings = "off"
+	}
 	config.Save(s.cfg)
+	if !meetings {
+		// A re-run that unchecks transcription must also stop a running service;
+		// Start() only ever brings services up.
+		_ = s.useMeetings(false)
+		s.syncMeetingsListener()
+	}
 	s.Start()
 }
 
