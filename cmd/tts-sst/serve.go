@@ -28,6 +28,9 @@ const offID = "off"
 const (
 	offTTSID = "off-tts"
 	offSTTID = "off-stt"
+	// "On" rows in the settings page: re-enable a service with its previous model.
+	onTTSID = "on-tts"
+	onSTTID = "on-stt"
 )
 
 func isOff(id string) bool { return id == offID }
@@ -373,6 +376,9 @@ func (s *service) SwitchSTT(id string) error {
 		s.setStatus("Switch failed: %v", err)
 		return err
 	}
+	if isOff(id) && s.cfg.STTModel != "" && !isOff(s.cfg.STTModel) {
+		s.cfg.PrevSTTModel = s.cfg.STTModel // so "On" can restore this pick
+	}
 	s.cfg.STTModel = id
 	config.Save(s.cfg)
 	s.syncListeners()
@@ -385,11 +391,38 @@ func (s *service) SwitchTTS(id string) error {
 		s.setStatus("Switch failed: %v", err)
 		return err
 	}
+	if isOff(id) && s.cfg.TTSVoice != "" && !isOff(s.cfg.TTSVoice) {
+		s.cfg.PrevTTSVoice = s.cfg.TTSVoice
+	}
 	s.cfg.TTSVoice = id
 	config.Save(s.cfg)
 	s.syncListeners()
 	s.running()
 	return nil
+}
+
+// TurnOnSTT / TurnOnTTS re-enable a switched-off service with the model it was
+// using before, falling back to the language default if that pick is gone.
+func (s *service) TurnOnSTT() error {
+	_, def := models.DefaultsFor(s.cfg.Language)
+	id := s.resolve(s.cfg.PrevSTTModel, models.STT, def.ID)
+	if id == "" || isOff(id) {
+		id = def.ID
+	}
+	return s.SwitchSTT(id)
+}
+
+func (s *service) TurnOnTTS() error {
+	def, _ := models.DefaultsFor(s.cfg.Language)
+	fallback := def.ID
+	if fallback == "" {
+		fallback = sapiVoiceID // a language with no downloadable voice still has SAPI
+	}
+	id := s.resolve(s.cfg.PrevTTSVoice, models.TTS, fallback)
+	if id == "" || isOff(id) {
+		id = fallback
+	}
+	return s.SwitchTTS(id)
 }
 
 // SetSpeed persists and applies the speaking rate to the live voice.

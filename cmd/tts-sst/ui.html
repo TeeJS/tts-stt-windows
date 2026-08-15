@@ -117,6 +117,7 @@
     <div id="tab-voices">
       <h2>Voices (TTS)</h2>
       <p class="sub">The voice that reads replies aloud. Downloaded voices work offline, forever.</p>
+      <div id="list-voices-toggle"></div>
       <div class="toolbar">
         <input type="search" id="q-voices" placeholder="Search voices…">
         <select id="lang-voices"></select>
@@ -127,6 +128,7 @@
     <div id="tab-speech" hidden>
       <h2>Speech recognition (STT)</h2>
       <p class="sub">The model that turns what you say into text. Larger models are more accurate but slower.</p>
+      <div id="list-speech-toggle"></div>
       <div class="toolbar">
         <input type="search" id="q-speech" placeholder="Search models…">
         <select id="lang-speech"></select>
@@ -307,6 +309,7 @@ function card(m) {
       <div class="title">
         <span class="name"></span>
         ${m.active ? '<span class="badge on">Active</span>' : ''}
+        ${state.busy && state.busy.includes(m.name) ? '<span class="badge on">⇣ Downloading…</span>' : ''}
         ${m.installed && !m.active && !isSynthetic(m) ? '<span class="badge">Downloaded</span>' : ''}
       </div>
       <div class="meta"></div>
@@ -339,7 +342,8 @@ function card(m) {
 }
 
 function renderList(kind, listEl, q, langSel) {
-  const all = state.models.filter(m => m.kind === kind);
+  // The synthetic "Off" entries are represented by the Off/On rows above the list now.
+  const all = state.models.filter(m => m.kind === kind && m.family !== 'off');
   langOptions(langSel, all, true);
   const term = q.value.trim().toLowerCase();
   const lang = langSel.value;
@@ -365,13 +369,8 @@ function renderList(kind, listEl, q, langSel) {
 
   listEl.innerHTML = '';
   if (!match.length) { listEl.innerHTML = '<div class="empty">Nothing matches that search.</div>'; return; }
-  // "Off" sits on its own above the models: it isn't a thing you'd scan the language list for,
-  // and burying it among 200 voices would make turning a service off feel like a trick.
-  const off = match.filter(m => m.family === 'off');
-  off.forEach(m => listEl.appendChild(card(m)));
-  const models_ = match.filter(m => m.family !== 'off');
   // Downloaded models first — the ones the user can switch to instantly.
-  const have = models_.filter(m => m.installed), rest = models_.filter(m => !m.installed);
+  const have = match.filter(m => m.installed), rest = match.filter(m => !m.installed);
   const section = (title, items) => {
     if (!items.length) return;
     const h = document.createElement('div');
@@ -381,6 +380,57 @@ function renderList(kind, listEl, q, langSel) {
   };
   section('On this computer', have);
   section('Available to download', rest);
+}
+
+// Off/On rows for the TTS and STT services, matching the Transcription tab: the top
+// of each tab states plainly whether the service is running and with what, instead
+// of leaving "on" implied by a small Active badge on a model card further down.
+function serviceToggleCard(kind, on) {
+  const activeId = kind === 'tts' ? state.activeTTS : state.activeSTT;
+  const serviceOn = activeId !== 'off' && activeId !== '';
+  const isThisRow = on === serviceOn;
+  const activeModel = state.models.find(m => m.kind === kind && m.active && m.family !== 'off');
+  const port = kind === 'tts' ? state.ports.tts : state.ports.stt;
+  const what = kind === 'tts' ? 'text-to-speech' : 'speech-to-text';
+
+  const el = document.createElement('div');
+  el.className = 'card' + (isThisRow ? ' active' : '');
+  el.innerHTML = `
+    <div class="info">
+      <div class="title">
+        <span class="name">${on ? 'On' : 'Off'}</span>
+        ${isThisRow ? '<span class="badge on">Active</span>' : ''}
+      </div>
+      <div class="meta"></div>
+    </div>
+    <div class="actions"></div>`;
+  el.querySelector('.meta').textContent = on
+    ? (serviceOn && activeModel
+        ? `Serving ${what} on port ${port} — using ${activeModel.name}`
+        : `Start ${what} back up with the last model used`)
+    : `Stop ${what} · frees its memory and port`;
+  if (!isThisRow) {
+    const use = document.createElement('button');
+    use.className = 'act' + (on ? ' primary' : '');
+    use.textContent = 'Use';
+    use.disabled = !!state.busy;
+    use.onclick = async () => {
+      use.disabled = true; use.textContent = on ? 'Starting…' : 'Stopping…';
+      await post('/api/select', {id: (on ? 'on-' : 'off-') + kind});
+      load();
+    };
+    el.querySelector('.actions').appendChild(use);
+  }
+  return el;
+}
+
+function renderServiceToggles() {
+  for (const kind of ['tts', 'stt']) {
+    const box = $(kind === 'tts' ? '#list-voices-toggle' : '#list-speech-toggle');
+    box.innerHTML = '';
+    box.appendChild(serviceToggleCard(kind, false));
+    box.appendChild(serviceToggleCard(kind, true));
+  }
 }
 
 // A card for one on/off state of the transcription service, styled and wired exactly
@@ -468,6 +518,7 @@ function render() {
   if (state.busy) $('#busyText').textContent = state.busy + ' — services turn on when this finishes.';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   ['voices','speech','settings','meetings'].forEach(t => $('#tab-'+t).hidden = t !== tab);
+  renderServiceToggles();
   renderMeetings();
 
   renderList('tts', $('#list-voices'), $('#q-voices'), $('#lang-voices'));

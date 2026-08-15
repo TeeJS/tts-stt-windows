@@ -283,15 +283,16 @@ func (u *uiServer) handleSelect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	// "off" is per-service, so the page sends a distinct id for each; both map to the same
-	// stored value. Everything else is either the built-in voice or a catalog entry.
+	// "off" and "on" are per-service, so the page sends a distinct id for each; the offs
+	// map to the same stored value, the ons restore the service's previous model.
+	// Everything else is either the built-in voice or a catalog entry.
 	id, kind := body.ID, models.TTS
 	switch body.ID {
 	case offTTSID:
 		id = offID
 	case offSTTID:
 		id, kind = offID, models.STT
-	case sapiVoiceID:
+	case onTTSID, onSTTID, sapiVoiceID:
 	default:
 		m, ok := models.ByID(body.ID)
 		if !ok {
@@ -302,9 +303,14 @@ func (u *uiServer) handleSelect(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		var err error
-		if kind == models.STT {
+		switch {
+		case body.ID == onTTSID:
+			err = u.svc.TurnOnTTS()
+		case body.ID == onSTTID:
+			err = u.svc.TurnOnSTT()
+		case kind == models.STT:
 			err = u.svc.SwitchSTT(id)
-		} else {
+		default:
 			err = u.svc.SwitchTTS(id)
 		}
 		if err != nil {

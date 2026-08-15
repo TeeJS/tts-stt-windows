@@ -14,7 +14,11 @@ type Config struct {
 	TTSPort  int    `json:"ttsPort"`
 	STTModel string `json:"sttModel"` // catalog id, "" = pick a default for Language
 	TTSVoice string `json:"ttsVoice"` // catalog id or "windows-builtin", "" = pick a default
-	Language string `json:"language"` // the user's language: drives defaults and multi-language hints
+	// Prev* remember the model in use when a service was switched off, so turning it
+	// back on restores the user's pick instead of resetting to a default.
+	PrevSTTModel string `json:"prevSttModel"`
+	PrevTTSVoice string `json:"prevTtsVoice"`
+	Language     string `json:"language"` // the user's language: drives defaults and multi-language hints
 	// BrowseLanguage is the language the model lists in the settings page are filtered to.
 	// Deliberately separate from Language: filtering the list to audition German voices must not
 	// silently change the language hint handed to speech recognition. "" follows Language.
