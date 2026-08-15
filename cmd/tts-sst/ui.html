@@ -70,6 +70,12 @@
   /* display:flex on the class outranks the browser's [hidden]{display:none} — without
      this the idle spinner showed before any enrollment had started. */
   .enroll-status[hidden] { display:none; }
+  /* Busy banner: after first-run setup the models download for several minutes, and
+     with only the small sidebar status the tabs looked like the services never got
+     enabled. This puts the download/load progress at the top of every tab. */
+  #busyBar { display:flex; align-items:center; gap:12px; background:var(--panel);
+    border:1px solid var(--accent); border-radius:11px; padding:13px 16px; margin-bottom:16px; }
+  #busyBar[hidden] { display:none; }
   .spinner { width:15px; height:15px; border:2px solid var(--line); border-top-color:var(--accent);
     border-radius:50%; animation:spin .7s linear infinite; flex:0 0 auto; }
   @keyframes spin { to { transform:rotate(360deg); } }
@@ -107,6 +113,7 @@
     <div id="navStatus">Loading…</div>
   </nav>
   <main>
+    <div id="busyBar" hidden><span class="spinner"></span><span id="busyText"></span></div>
     <div id="tab-voices">
       <h2>Voices (TTS)</h2>
       <p class="sub">The voice that reads replies aloud. Downloaded voices work offline, forever.</p>
@@ -457,6 +464,8 @@ function renderMeetings() {
 
 function render() {
   $('#navStatus').textContent = state.busy || state.status;
+  $('#busyBar').hidden = !state.busy;
+  if (state.busy) $('#busyText').textContent = state.busy + ' — services turn on when this finishes.';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   ['voices','speech','settings','meetings'].forEach(t => $('#tab-'+t).hidden = t !== tab);
   renderMeetings();
