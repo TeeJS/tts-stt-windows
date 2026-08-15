@@ -212,7 +212,7 @@
 const $ = s => document.querySelector(s);
 // Settings opens first: it's what the tray item points at, and the model lists are a deliberate
 // trip rather than the landing page.
-let state = null, tab = 'settings', busyPoll = null;
+let state = null, tab = 'settings', busyPoll = null, setupSeeded = false;
 
 // ---- data ----
 async function load() {
@@ -476,9 +476,15 @@ function render() {
   $('#portsHint').textContent = `Serving speech on port ${state.ports.stt}, voice on port ${state.ports.tts}.`;
 
   if (!state.setup) {
-    langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
-    $('#setupLang').value = state.language;
-    setupVoices();
+    // Seed the card ONCE: render() runs again on every state poll (4s idle, 700ms
+    // while busy), and re-seeding here reset the user's language and voice picks
+    // back to the defaults while they were still choosing.
+    if (!setupSeeded) {
+      setupSeeded = true;
+      langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
+      $('#setupLang').value = state.language;
+      setupVoices();
+    }
     $('#setup').classList.remove('hidden');
   }
 }
@@ -608,7 +614,7 @@ $('#rerunSetup').onclick = () => {
   $('#svcTTS').checked = state.activeTTS !== 'off';
   $('#svcSTT').checked = state.activeSTT !== 'off';
   $('#svcMeet').checked = !!state.meetings;
-  setupPlan();
+  setupVoices(); // populate the voice list for the current language (calls setupPlan)
   $('#setupCancel').hidden = false;
   $('#setup').classList.remove('hidden');
 };
