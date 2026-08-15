@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,30 +74,31 @@ func httpError(w http.ResponseWriter, code int, format string, args ...any) {
 
 // audioRequest parses the multipart form shared by /transcribe and /identify:
 // `audio` (file, required), `threshold` (optional float), `attendees`
-// (optional comma-separated list).
-func (s *Service) audioRequest(r *http.Request) (samples []float32, threshold float64, attendees []string, err error) {
+// (optional comma-separated list). name is the upload's original filename.
+func (s *Service) audioRequest(r *http.Request) (samples []float32, threshold float64, attendees []string, name string, err error) {
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		return nil, 0, nil, fmt.Errorf("bad multipart body: %w", err)
+		return nil, 0, nil, "", fmt.Errorf("bad multipart body: %w", err)
 	}
-	f, _, err := r.FormFile("audio")
+	f, hdr, err := r.FormFile("audio")
 	if err != nil {
-		return nil, 0, nil, errors.New("missing 'audio' file field")
+		return nil, 0, nil, "", errors.New("missing 'audio' file field")
 	}
+	name = hdr.Filename
 	defer f.Close()
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("reading upload: %w", err)
+		return nil, 0, nil, "", fmt.Errorf("reading upload: %w", err)
 	}
 	samples, err = DecodeAudio(data)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, "", err
 	}
 
 	threshold = s.defaultThreshold
 	if v := r.FormValue("threshold"); v != "" {
 		t, perr := strconv.ParseFloat(v, 64)
 		if perr != nil {
-			return nil, 0, nil, fmt.Errorf("bad threshold %q", v)
+			return nil, 0, nil, "", fmt.Errorf("bad threshold %q", v)
 		}
 		threshold = t
 	}
@@ -105,11 +107,27 @@ func (s *Service) audioRequest(r *http.Request) (samples []float32, threshold fl
 			attendees = append(attendees, a)
 		}
 	}
-	return samples, threshold, attendees, nil
+	return samples, threshold, attendees, name, nil
+}
+
+// responseFilename suggests "<upload basename>-diarizer-response.json" — the
+// naming convention downstream pipelines already use when saving these results.
+func responseFilename(upload string) string {
+	base := strings.TrimSuffix(filepath.Base(upload), filepath.Ext(upload))
+	base = strings.Map(func(r rune) rune {
+		if r == '"' || r == '\\' || r < 0x20 {
+			return -1
+		}
+		return r
+	}, base)
+	if base == "" || base == "." {
+		base = "meeting"
+	}
+	return base + "-diarizer-response.json"
 }
 
 func (s *Service) handleTranscribe(w http.ResponseWriter, r *http.Request) {
-	samples, threshold, attendees, err := s.audioRequest(r)
+	samples, threshold, attendees, upload, err := s.audioRequest(r)
 	if err != nil {
 		s.badRequest(w, err)
 		return
@@ -121,6 +139,7 @@ func (s *Service) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	defer s.progress("")
 
 	segments, report := s.diar.Transcribe(s.rec, samples, threshold, attendees)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", responseFilename(upload)))
 	writeJSON(w, http.StatusOK, struct {
 		SpeakerReport *SpeakerReport `json:"speaker_report"`
 		Segments      []Segment      `json:"segments"`
@@ -128,7 +147,7 @@ func (s *Service) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleIdentify(w http.ResponseWriter, r *http.Request) {
-	samples, threshold, attendees, err := s.audioRequest(r)
+	samples, threshold, attendees, _, err := s.audioRequest(r)
 	if err != nil {
 		s.badRequest(w, err)
 		return

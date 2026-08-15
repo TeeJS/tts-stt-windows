@@ -30,6 +30,21 @@ func TestStorePathSafety(t *testing.T) {
 	}
 }
 
+func TestResponseFilename(t *testing.T) {
+	cases := map[string]string{
+		"2026-08-13_11-00-00-Titan data.wav": "2026-08-13_11-00-00-Titan data-diarizer-response.json",
+		"meeting.mp3":                        "meeting-diarizer-response.json",
+		`C:\path\to\rec.wav`:                 "rec-diarizer-response.json",
+		"":                                   "meeting-diarizer-response.json",
+		`has"quote.wav`:                      "hasquote-diarizer-response.json",
+	}
+	for in, want := range cases {
+		if got := responseFilename(in); got != want {
+			t.Errorf("responseFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestStoreLifecycle(t *testing.T) {
 	s := newTestStore(t)
 	emb := []float32{0.1, 0.2, 0.3}

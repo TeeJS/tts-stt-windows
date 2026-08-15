@@ -105,7 +105,16 @@ func (s *service) running() {
 	}
 	line := fmt.Sprintf("Running — %s · %s", label(stt), label(tts))
 	if s.meetingsOn() {
-		line += fmt.Sprintf(" · meetings :%d", s.cfg.MeetingsPort)
+		// Report what is true: the port-busy failure used to be overwritten by
+		// this line claiming meetings was being served.
+		s.lnMu.Lock()
+		listening := s.meetLn != nil
+		s.lnMu.Unlock()
+		if listening {
+			line += fmt.Sprintf(" · meetings :%d", s.cfg.MeetingsPort)
+		} else {
+			line += fmt.Sprintf(" · meetings port %d BUSY", s.cfg.MeetingsPort)
+		}
 	}
 	s.setStatus("%s", line)
 }

@@ -63,6 +63,11 @@ HTTP timeout to 3600 s. One job runs at a time; concurrent requests queue.
 for consistent-but-unknown voices, or the literal `UNKNOWN` for spans at genuine
 speaker handovers.
 
+The response also carries a suggested filename following the pipeline's naming
+convention — `Content-Disposition: inline; filename="<recording basename>-diarizer-response.json"`
+(e.g. `My Meeting 2026.wav` → `My Meeting 2026-diarizer-response.json`). Honor
+it when saving, or name the file yourself; either way the body is the same.
+
 ### Errors
 
 Errors mirror FastAPI: a JSON body `{"detail": "<message>"}` with status 400
