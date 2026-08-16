@@ -27,18 +27,63 @@ func unsupported(format string, args ...any) error {
 
 // DecodeAudio turns an uploaded file's bytes into mono float32 at 16 kHz.
 func DecodeAudio(data []byte) ([]float32, error) {
+	mono, _, err := DecodeAudioChannels(data)
+	return mono, err
+}
+
+// DecodeAudioChannels decodes to the 16 kHz mono downmix AND each source channel
+// resampled to 16 kHz. Callers that want per-channel information (e.g. an isolated
+// microphone on one channel of a stereo recording) use the channels; the mono
+// downmix drives diarization and transcription exactly as before. For a mono file
+// channels has length 1 and equals mono.
+func DecodeAudioChannels(data []byte) (mono []float32, channels [][]float32, err error) {
+	var chans [][]float32
+	var rate int
 	switch {
 	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WAVE":
-		return decodeWAV(data)
+		chans, rate, err = decodeWAV(data)
 	case looksLikeMP3(data):
-		return decodeMP3(data)
+		chans, rate, err = decodeMP3(data)
 	default:
 		head := data
 		if len(head) > 8 {
 			head = head[:8]
 		}
-		return nil, unsupported("unrecognized audio container (leading bytes %q) — send WAV or MP3", head)
+		return nil, nil, unsupported("unrecognized audio container (leading bytes %q) — send WAV or MP3", head)
 	}
+	if err != nil {
+		return nil, nil, err
+	}
+	channels = make([][]float32, len(chans))
+	for i, c := range chans {
+		channels[i] = Resample(c, rate, pipelineRate)
+	}
+	mono = downmix(channels)
+	return mono, channels, nil
+}
+
+// downmix averages equal-length channel signals into one.
+func downmix(channels [][]float32) []float32 {
+	if len(channels) == 1 {
+		return channels[0]
+	}
+	n := 0
+	for _, c := range channels {
+		if len(c) > n {
+			n = len(c)
+		}
+	}
+	out := make([]float32, n)
+	for i := 0; i < n; i++ {
+		var sum float64
+		for _, c := range channels {
+			if i < len(c) {
+				sum += float64(c[i])
+			}
+		}
+		out[i] = float32(sum / float64(len(channels)))
+	}
+	return out
 }
 
 func looksLikeMP3(data []byte) bool {
@@ -52,7 +97,8 @@ func looksLikeMP3(data []byte) bool {
 	return data[0] == 0xFF && data[1]&0xE0 == 0xE0 && data[1]&0x06 != 0
 }
 
-func decodeWAV(data []byte) ([]float32, error) {
+// decodeWAV returns the source-rate per-channel signals and the sample rate.
+func decodeWAV(data []byte) ([][]float32, int, error) {
 	// Walk RIFF chunks for fmt and data; other chunks (LIST, fact, ...) are skipped.
 	var (
 		haveFmt     bool
@@ -60,7 +106,7 @@ func decodeWAV(data []byte) ([]float32, error) {
 		channels    int
 		sampleRate  int
 		bitsPerSamp int
-		samples     []float32
+		chans       [][]float32
 		haveData    bool
 	)
 	pos := 12
@@ -79,7 +125,7 @@ func decodeWAV(data []byte) ([]float32, error) {
 		switch id {
 		case "fmt ":
 			if size < 16 {
-				return nil, unsupported("WAV fmt chunk too short (%d bytes)", size)
+				return nil, 0, unsupported("WAV fmt chunk too short (%d bytes)", size)
 			}
 			format = binary.LittleEndian.Uint16(data[body:])
 			channels = int(binary.LittleEndian.Uint16(data[body+2:]))
@@ -92,18 +138,18 @@ func decodeWAV(data []byte) ([]float32, error) {
 			haveFmt = true
 		case "data":
 			if !haveFmt {
-				return nil, unsupported("WAV data chunk before fmt chunk")
+				return nil, 0, unsupported("WAV data chunk before fmt chunk")
 			}
 			if format == 0x0055 { // MPEG Layer 3 in a RIFF wrapper
 				return decodeMP3(data[body : body+size])
 			}
 			if channels < 1 || sampleRate < 1 {
-				return nil, unsupported("WAV has %d channels at %d Hz", channels, sampleRate)
+				return nil, 0, unsupported("WAV has %d channels at %d Hz", channels, sampleRate)
 			}
 			var err error
-			samples, err = pcmToFloat(data[body:body+size], format, bitsPerSamp, channels)
+			chans, err = pcmToChannels(data[body:body+size], format, bitsPerSamp, channels)
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			haveData = true
 		}
@@ -113,13 +159,13 @@ func decodeWAV(data []byte) ([]float32, error) {
 		}
 	}
 	if !haveData {
-		return nil, unsupported("WAV file has no audio data")
+		return nil, 0, unsupported("WAV file has no audio data")
 	}
-	return Resample(samples, sampleRate, pipelineRate), nil
+	return chans, sampleRate, nil
 }
 
-// pcmToFloat converts interleaved PCM to mono float32, averaging channels.
-func pcmToFloat(raw []byte, format uint16, bits, channels int) ([]float32, error) {
+// pcmToChannels de-interleaves PCM into one float32 slice per channel.
+func pcmToChannels(raw []byte, format uint16, bits, channels int) ([][]float32, error) {
 	var bytesPer int
 	switch {
 	case format == 1 && bits == 16:
@@ -135,47 +181,50 @@ func pcmToFloat(raw []byte, format uint16, bits, channels int) ([]float32, error
 	}
 	frame := bytesPer * channels
 	n := len(raw) / frame
-	out := make([]float32, n)
+	out := make([][]float32, channels)
+	for c := range out {
+		out[c] = make([]float32, n)
+	}
 	for i := 0; i < n; i++ {
-		var sum float64
 		for c := 0; c < channels; c++ {
 			p := raw[i*frame+c*bytesPer:]
+			var v float64
 			switch {
 			case format == 3:
-				sum += float64(math.Float32frombits(binary.LittleEndian.Uint32(p)))
+				v = float64(math.Float32frombits(binary.LittleEndian.Uint32(p)))
 			case bits == 16:
-				sum += float64(int16(binary.LittleEndian.Uint16(p))) / 32768
+				v = float64(int16(binary.LittleEndian.Uint16(p))) / 32768
 			case bits == 24:
-				v := int32(p[0]) | int32(p[1])<<8 | int32(p[2])<<16
-				v = v << 8 >> 8 // sign-extend
-				sum += float64(v) / 8388608
+				x := int32(p[0]) | int32(p[1])<<8 | int32(p[2])<<16
+				x = x << 8 >> 8 // sign-extend
+				v = float64(x) / 8388608
 			case bits == 32:
-				sum += float64(int32(binary.LittleEndian.Uint32(p))) / 2147483648
+				v = float64(int32(binary.LittleEndian.Uint32(p))) / 2147483648
 			}
+			out[c][i] = float32(v)
 		}
-		out[i] = float32(sum / float64(channels))
 	}
 	return out, nil
 }
 
-func decodeMP3(data []byte) ([]float32, error) {
+func decodeMP3(data []byte) ([][]float32, int, error) {
 	dec, err := mp3.NewDecoder(bytes.NewReader(data))
 	if err != nil {
-		return nil, unsupported("cannot decode MP3 data: %v", err)
+		return nil, 0, unsupported("cannot decode MP3 data: %v", err)
 	}
 	// go-mp3 always emits 16-bit little-endian stereo at the source sample rate.
 	pcm, err := io.ReadAll(dec)
 	if err != nil {
-		return nil, unsupported("MP3 decode failed: %v", err)
+		return nil, 0, unsupported("MP3 decode failed: %v", err)
 	}
 	n := len(pcm) / 4
-	mono := make([]float32, n)
+	left := make([]float32, n)
+	right := make([]float32, n)
 	for i := 0; i < n; i++ {
-		l := float64(int16(binary.LittleEndian.Uint16(pcm[i*4:]))) / 32768
-		r := float64(int16(binary.LittleEndian.Uint16(pcm[i*4+2:]))) / 32768
-		mono[i] = float32((l + r) / 2)
+		left[i] = float32(int16(binary.LittleEndian.Uint16(pcm[i*4:]))) / 32768
+		right[i] = float32(int16(binary.LittleEndian.Uint16(pcm[i*4+2:]))) / 32768
 	}
-	return Resample(mono, dec.SampleRate(), pipelineRate), nil
+	return [][]float32{left, right}, dec.SampleRate(), nil
 }
 
 // Resample converts in from inRate to outRate with a Kaiser-windowed-sinc kernel.

@@ -26,6 +26,10 @@ type ClusterReport struct {
 	Margin        *float64     `json:"margin"`
 	Ambiguous     bool         `json:"ambiguous"`
 	Scores        []Score      `json:"scores"`
+	// ChannelMatched is set when this cluster was named from an isolated-microphone
+	// channel rather than voice matching (see MeHint). Omitted otherwise, so the
+	// report schema is unchanged for recordings that don't use the feature.
+	ChannelMatched bool `json:"channel_matched,omitempty"`
 }
 
 type SpeakerSummary struct {

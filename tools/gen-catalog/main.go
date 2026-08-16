@@ -49,15 +49,15 @@ func diarEntries() []Entry {
 		{
 			ID: "pyannote-segmentation-3-0", Kind: "diar", Family: "segmentation",
 			Name: "Pyannote segmentation 3.0", Langs: []string{"multi"}, Size: 6958444,
-			URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
-			Dir: "sherpa-onnx-pyannote-segmentation-3-0",
+			URL:   "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+			Dir:   "sherpa-onnx-pyannote-segmentation-3-0",
 			Notes: "Splits a meeting recording into speaker turns.",
 		},
 		{
 			ID: "eres2net-en-voxceleb", Kind: "diar", Family: "embedding",
 			Name: "ERes2Net speaker embedding", Langs: []string{"multi"}, Size: 26485263,
-			URL: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
-			Dir: "eres2net-en-voxceleb",
+			URL:   "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
+			Dir:   "eres2net-en-voxceleb",
 			Notes: "Voice fingerprints for recognizing enrolled speakers.",
 		},
 	}

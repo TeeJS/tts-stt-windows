@@ -59,7 +59,7 @@ func main() {
 		}
 	}
 
-	report := d.IdentifySpeakers(samples, *threshold, att)
+	report := d.IdentifySpeakers(samples, *threshold, att, nil)
 	out, _ := json.MarshalIndent(report, "", "  ")
 	fmt.Println(string(out))
 }

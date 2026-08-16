@@ -27,6 +27,8 @@ func main() {
 	threshold := flag.Float64("threshold", diarize.SimilarityThreshold, "identification threshold")
 	clusterThreshold := flag.Float64("cluster-threshold", 0.5, "sherpa clustering threshold")
 	attendees := flag.String("attendees", "", "comma-separated attendee names (optional)")
+	meName := flag.String("me", "", "channel-guided ID: name the speaker isolated on the mic channel")
+	meChannel := flag.Int("me-channel", 0, "which channel is the mic (0=left, 1=right)")
 	threads := flag.Int("threads", runtime.NumCPU()/2, "onnxruntime threads")
 	flag.Parse()
 	if *seg == "" || *embed == "" || *stt == "" || *enrollments == "" || *wav == "" {
@@ -38,11 +40,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	samples, err := diarize.DecodeAudio(data)
+	samples, channels, err := diarize.DecodeAudioChannels(data)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Fprintf(os.Stderr, "decoded %.1fs of audio\n", float64(len(samples))/16000)
+	fmt.Fprintf(os.Stderr, "decoded %.1fs of audio (%d channel(s))\n", float64(len(samples))/16000, len(channels))
+
+	var me *diarize.MeHint
+	if *meName != "" {
+		me = &diarize.MeHint{Name: *meName, Channel: *meChannel, Signals: channels}
+	}
 
 	store, err := diarize.NewEnrollmentStore(*enrollments)
 	if err != nil {
@@ -66,7 +73,7 @@ func main() {
 		}
 	}
 
-	segments, report := d.Transcribe(rec, samples, *threshold, att)
+	segments, report := d.Transcribe(rec, samples, *threshold, att, me)
 	out, _ := json.MarshalIndent(struct {
 		SpeakerReport *diarize.SpeakerReport `json:"speaker_report"`
 		Segments      []diarize.Segment      `json:"segments"`

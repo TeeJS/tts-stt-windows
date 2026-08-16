@@ -72,42 +72,63 @@ func httpError(w http.ResponseWriter, code int, format string, args ...any) {
 	writeJSON(w, code, map[string]string{"detail": fmt.Sprintf(format, args...)})
 }
 
+// audioReq is the parsed form for /transcribe and /identify.
+type audioReq struct {
+	samples   []float32 // 16 kHz mono downmix
+	threshold float64
+	attendees []string
+	filename  string
+	me        *MeHint // set only when me_name was provided on a multi-channel file
+}
+
 // audioRequest parses the multipart form shared by /transcribe and /identify:
-// `audio` (file, required), `threshold` (optional float), `attendees`
-// (optional comma-separated list). name is the upload's original filename.
-func (s *Service) audioRequest(r *http.Request) (samples []float32, threshold float64, attendees []string, name string, err error) {
+// `audio` (file, required), `threshold` (optional float), `attendees` (optional
+// comma-separated list), and the channel-guided-ID fields `me_name` / `me_channel`.
+func (s *Service) audioRequest(r *http.Request) (*audioReq, error) {
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		return nil, 0, nil, "", fmt.Errorf("bad multipart body: %w", err)
+		return nil, fmt.Errorf("bad multipart body: %w", err)
 	}
 	f, hdr, err := r.FormFile("audio")
 	if err != nil {
-		return nil, 0, nil, "", errors.New("missing 'audio' file field")
+		return nil, errors.New("missing 'audio' file field")
 	}
-	name = hdr.Filename
 	defer f.Close()
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, 0, nil, "", fmt.Errorf("reading upload: %w", err)
+		return nil, fmt.Errorf("reading upload: %w", err)
 	}
-	samples, err = DecodeAudio(data)
+	mono, channels, err := DecodeAudioChannels(data)
 	if err != nil {
-		return nil, 0, nil, "", err
+		return nil, err
 	}
 
-	threshold = s.defaultThreshold
+	req := &audioReq{samples: mono, threshold: s.defaultThreshold, filename: hdr.Filename}
 	if v := r.FormValue("threshold"); v != "" {
 		t, perr := strconv.ParseFloat(v, 64)
 		if perr != nil {
-			return nil, 0, nil, "", fmt.Errorf("bad threshold %q", v)
+			return nil, fmt.Errorf("bad threshold %q", v)
 		}
-		threshold = t
+		req.threshold = t
 	}
 	for _, a := range strings.Split(r.FormValue("attendees"), ",") {
 		if a = strings.TrimSpace(a); a != "" {
-			attendees = append(attendees, a)
+			req.attendees = append(req.attendees, a)
 		}
 	}
-	return samples, threshold, attendees, name, nil
+
+	// Channel-guided identification: name the speaker isolated on one channel.
+	// Silently inert on a mono upload — the caller gets normal voice matching.
+	if meName := strings.TrimSpace(r.FormValue("me_name")); meName != "" && len(channels) >= 2 {
+		ch := 0 // default: left channel is the user's microphone
+		switch strings.ToLower(strings.TrimSpace(r.FormValue("me_channel"))) {
+		case "right", "1":
+			ch = 1
+		case "left", "0", "":
+			ch = 0
+		}
+		req.me = &MeHint{Name: meName, Channel: ch, Signals: channels}
+	}
+	return req, nil
 }
 
 // responseFilename suggests "<upload basename>-diarizer-response.json" — the
@@ -127,19 +148,19 @@ func responseFilename(upload string) string {
 }
 
 func (s *Service) handleTranscribe(w http.ResponseWriter, r *http.Request) {
-	samples, threshold, attendees, upload, err := s.audioRequest(r)
+	req, err := s.audioRequest(r)
 	if err != nil {
 		s.badRequest(w, err)
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	minutes := float64(len(samples)) / pipelineRate / 60
+	minutes := float64(len(req.samples)) / pipelineRate / 60
 	s.progress(fmt.Sprintf("Transcribing meeting (%.0f min)…", minutes))
 	defer s.progress("")
 
-	segments, report := s.diar.Transcribe(s.rec, samples, threshold, attendees)
-	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", responseFilename(upload)))
+	segments, report := s.diar.Transcribe(s.rec, req.samples, req.threshold, req.attendees, req.me)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", responseFilename(req.filename)))
 	writeJSON(w, http.StatusOK, struct {
 		SpeakerReport *SpeakerReport `json:"speaker_report"`
 		Segments      []Segment      `json:"segments"`
@@ -147,7 +168,7 @@ func (s *Service) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleIdentify(w http.ResponseWriter, r *http.Request) {
-	samples, threshold, attendees, _, err := s.audioRequest(r)
+	req, err := s.audioRequest(r)
 	if err != nil {
 		s.badRequest(w, err)
 		return
@@ -158,7 +179,7 @@ func (s *Service) handleIdentify(w http.ResponseWriter, r *http.Request) {
 	defer s.progress("")
 
 	// /identify returns the bare report object, unwrapped — clients rely on this.
-	writeJSON(w, http.StatusOK, s.diar.IdentifySpeakers(samples, threshold, attendees))
+	writeJSON(w, http.StatusOK, s.diar.IdentifySpeakers(req.samples, req.threshold, req.attendees, req.me))
 }
 
 func (s *Service) handleEnroll(w http.ResponseWriter, r *http.Request) {

@@ -28,6 +28,17 @@ Content-Type: multipart/form-data
 | `audio`     | file   | yes      | WAV (PCM 16/24/32-bit or float32, any rate/channels) or MP3 — including MP3 data inside a `.wav` container (HiDock recorders do this). Anything else → 400. |
 | `threshold` | text   | no       | Speaker-identification cosine cutoff, e.g. `0.70`. Defaults to the service's configured value. |
 | `attendees` | text   | no       | Comma-separated names. Enrolled speakers *not* on the list are penalized 0.15, reducing false matches. `"Last, First"` and `"First Last"` forms both work. |
+| `me_name`   | text   | no       | Name of the speaker isolated on one channel of a **stereo** recording (e.g. your mic on the left, everyone else's loopback on the right). That speaker's cluster is labeled from channel energy — ground truth, no cosine threshold, correct even on a bad-mic day. Ignored on a mono file. Need not be enrolled. |
+| `me_channel`| text   | no       | Which channel holds `me_name`'s mic: `left` (default) or `right`. |
+
+**Channel-guided identification:** when `me_name` is set and the upload is stereo,
+the service measures each diarized cluster's speech energy on the mic channel vs the
+other channel; the cluster that's mic-dominant (≥3×) is labeled `me_name` outright,
+overriding voice matching (the cosine scores stay in the report). Its cluster carries
+`"channel_matched": true`. Bulletproof for remote meetings where the loopback excludes
+your voice; in a hybrid room where people sit with you, their voice reaches your mic
+too, so those fall back to voice matching. Absent `me_name` or a mono file → normal
+voice matching, unchanged.
 
 **The request blocks until processing finishes.** Budget roughly a third of the
 recording's duration on CPU (an 18-minute meeting takes ~5 minutes). Set your

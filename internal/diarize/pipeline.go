@@ -256,6 +256,56 @@ func (d *Diarizer) identify(emb []float64, threshold float64, attendees map[stri
 	return nil, scores
 }
 
+// MeHint marks one channel of the recording as a known speaker's isolated microphone,
+// letting the pipeline name that speaker's cluster from channel energy instead of voice
+// matching. Name is the speaker (resolved to their enrolled display name when it matches
+// an enrollment); Channel is the mic channel's index; Signals are the per-channel 16 kHz
+// signals from DecodeAudioChannels. Nil (or fewer than two channels) disables it.
+type MeHint struct {
+	Name    string
+	Channel int
+	Signals [][]float32
+}
+
+func (h *MeHint) active() bool {
+	return h != nil && strings.TrimSpace(h.Name) != "" &&
+		len(h.Signals) >= 2 && h.Channel >= 0 && h.Channel < len(h.Signals)
+}
+
+// channelEnergy sums the squared sample energy of a signal over a set of turns.
+func channelEnergy(signal []float32, segs []Turn) float64 {
+	var e float64
+	for _, s := range segs {
+		lo, hi := int(s.Start*pipelineRate), int(s.End*pipelineRate)
+		if lo < 0 {
+			lo = 0
+		}
+		if hi > len(signal) {
+			hi = len(signal)
+		}
+		for i := lo; i < hi; i++ {
+			e += float64(signal[i]) * float64(signal[i])
+		}
+	}
+	return e
+}
+
+// isMe reports whether a cluster's speech is dominated by the mic channel — i.e. it is
+// the hinted user talking, not their mic picking up someone else's bleed.
+func (h *MeHint) isMe(segs []Turn) bool {
+	if !h.active() {
+		return false
+	}
+	me := channelEnergy(h.Signals[h.Channel], segs)
+	var other float64
+	for i, sig := range h.Signals {
+		if i != h.Channel {
+			other += channelEnergy(sig, segs)
+		}
+	}
+	return me > 1e-6 && me >= other*ChannelMeRatio
+}
+
 // protoCluster is a speaker cluster mid-analysis: sherpa's raw output grouped by
 // label, possibly merged with other clusters before identification.
 type protoCluster struct {
@@ -332,7 +382,7 @@ func (d *Diarizer) mergeClusters(samples []float32, clusters []protoCluster) []p
 // identified clusters take the matched name, the rest become "Speaker A",
 // "Speaker B", ... in order of appearance. Returns the cluster reports and a map
 // from sherpa's integer label to the display name.
-func (d *Diarizer) analyzeAndLabel(samples []float32, timeline []Turn, threshold float64, attendees map[string]bool) ([]ClusterReport, map[int]string) {
+func (d *Diarizer) analyzeAndLabel(samples []float32, timeline []Turn, threshold float64, attendees map[string]bool, me *MeHint) ([]ClusterReport, map[int]string) {
 	labels := map[int]bool{}
 	for _, t := range timeline {
 		labels[t.Label] = true
@@ -370,6 +420,11 @@ func (d *Diarizer) analyzeAndLabel(samples []float32, timeline []Turn, threshold
 	}
 	protos = kept
 
+	meLabel := ""
+	if me.active() {
+		meLabel = d.resolveMeName(me.Name)
+	}
+
 	clusters := make([]ClusterReport, 0, len(protos))
 	labelMap := make(map[int]string, len(unique))
 	unnamed := 0
@@ -399,9 +454,18 @@ func (d *Diarizer) analyzeAndLabel(samples []float32, timeline []Turn, threshold
 				}
 			}
 		}
-		if entry.Matched != nil {
+		// An isolated-mic channel is ground truth: if this cluster's speech is
+		// mic-channel-dominant it IS the hinted user, overriding whatever the
+		// embedding said (the cosine scores stay in the report for transparency).
+		switch {
+		case meLabel != "" && me.isMe(p.segs):
+			label := meLabel
+			entry.Matched = &label
+			entry.Cluster = label
+			entry.ChannelMatched = true
+		case entry.Matched != nil:
 			entry.Cluster = *entry.Matched
-		} else {
+		default:
 			if unnamed < 26 {
 				entry.Cluster = fmt.Sprintf("Speaker %c", 'A'+unnamed)
 			} else {
@@ -415,6 +479,20 @@ func (d *Diarizer) analyzeAndLabel(samples []float32, timeline []Turn, threshold
 		clusters = append(clusters, entry)
 	}
 	return clusters, labelMap
+}
+
+// resolveMeName maps a hinted name to its enrolled display form when one matches
+// (via NormalizeName), so the label agrees with the speaker's profile; otherwise
+// the name is used verbatim — the channel is proof they spoke, enrolled or not.
+func (d *Diarizer) resolveMeName(name string) string {
+	names, _ := d.store.ListSpeakers()
+	norm := NormalizeName(name)
+	for _, e := range names {
+		if NormalizeName(e) == norm {
+			return e
+		}
+	}
+	return strings.TrimSpace(name)
 }
 
 // attendeesApplied renders the resolved attendee set for the report (sorted, or nil).
@@ -432,20 +510,20 @@ func attendeesApplied(set map[string]bool) []string {
 
 // IdentifySpeakers runs diarization + identification only — no transcription.
 // samples are 16 kHz mono.
-func (d *Diarizer) IdentifySpeakers(samples []float32, threshold float64, attendees []string) *SpeakerReport {
+func (d *Diarizer) IdentifySpeakers(samples []float32, threshold float64, attendees []string, me *MeHint) *SpeakerReport {
 	set := d.resolveAttendees(attendees)
 	timeline := d.Timeline(samples)
-	clusters, _ := d.analyzeAndLabel(samples, timeline, threshold, set)
+	clusters, _ := d.analyzeAndLabel(samples, timeline, threshold, set, me)
 	return buildReport(clusters, threshold, attendeesApplied(set))
 }
 
 // DiarizeWords attributes transcribed words to speakers and builds the report.
 // Ports the word-midpoint assignment, UNKNOWN fill, and segment grouping from
 // Diarizer.diarize in diarizer.py.
-func (d *Diarizer) DiarizeWords(samples []float32, words []Word, threshold float64, attendees []string) ([]Segment, *SpeakerReport) {
+func (d *Diarizer) DiarizeWords(samples []float32, words []Word, threshold float64, attendees []string, me *MeHint) ([]Segment, *SpeakerReport) {
 	set := d.resolveAttendees(attendees)
 	timeline := d.Timeline(samples)
-	clusters, labelMap := d.analyzeAndLabel(samples, timeline, threshold, set)
+	clusters, labelMap := d.analyzeAndLabel(samples, timeline, threshold, set, me)
 	// Turns from dropped micro-clusters are removed so their words go through the
 	// UNKNOWN-fill path rather than surfacing a label the report no longer has.
 	attributable := make([]Turn, 0, len(timeline))
@@ -473,10 +551,10 @@ func (d *Diarizer) EnrollSpeaker(name string, samples []float32) error {
 // Transcription windows cover the FULL timeline — including micro-fragments the
 // report drops — so no speech goes untranscribed; their words then flow through
 // the UNKNOWN-fill path like any other unattributed word.
-func (d *Diarizer) Transcribe(t Transcriber, samples []float32, threshold float64, attendees []string) ([]Segment, *SpeakerReport) {
+func (d *Diarizer) Transcribe(t Transcriber, samples []float32, threshold float64, attendees []string, me *MeHint) ([]Segment, *SpeakerReport) {
 	set := d.resolveAttendees(attendees)
 	timeline := d.Timeline(samples)
-	clusters, labelMap := d.analyzeAndLabel(samples, timeline, threshold, set)
+	clusters, labelMap := d.analyzeAndLabel(samples, timeline, threshold, set, me)
 	words := TranscribeMeeting(t, samples, timeline)
 	attributable := make([]Turn, 0, len(timeline))
 	for _, t := range timeline {

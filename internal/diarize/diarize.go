@@ -34,6 +34,14 @@ const (
 	// measured >= 0.70 (enrollment-quality audio) and impostors <= 0.54, so 0.60 splits
 	// the difference with margin both ways.
 	ClusterMergeThreshold = 0.60
+	// ChannelMeRatio: when a caller marks one channel as an isolated microphone (open-quake
+	// records the user's mic on the left channel, everyone else's loopback on the right), a
+	// cluster whose speech energy on the mic channel is at least this many times its energy on
+	// the other channel is that user — ground truth, no cosine threshold. During the user's own
+	// speech the mic channel dominates hugely; during everyone else's it's near silent (only
+	// bleed), so the two populations separate with wide margin and 3x is safely clear of both.
+	ChannelMeRatio = 3.0
+
 	// MinClusterSec: after merging, clusters still shorter than this are micro-fragments
 	// of crosstalk and backchannel that sherpa split off but whose embeddings are too
 	// weak to merge anywhere (typically one 1-2s segment). They are dropped from the
