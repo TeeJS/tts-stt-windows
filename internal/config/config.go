@@ -30,6 +30,12 @@ type Config struct {
 	// "(clicking)", "[BLANK_AUDIO]" — instead of passing them on as if they were spoken.
 	FilterNonSpeech bool `json:"filterNonSpeech"`
 
+	// Translate switches a dedicated STT endpoint that runs Whisper in "translate" mode (any spoken
+	// language -> English), on its own port so normal same-language STT keeps serving on STTPort.
+	// "on", or "" / "off" for off. Whisper-only; it reuses the active STT model in translate mode.
+	Translate     string `json:"translate"`
+	TranslatePort int    `json:"translatePort"`
+
 	// Meetings switches the meeting-diarization HTTP service: "on", or "" / "off" for off.
 	// Unlike STT/TTS this is not a model id — the service needs several models at once, so
 	// on/off and the model choices are separate fields.
@@ -46,7 +52,7 @@ type Config struct {
 
 func Defaults() Config {
 	return Config{Bind: "127.0.0.1", STTPort: 10300, TTSPort: 10200, Language: "en", Speed: 1.0, FilterNonSpeech: true,
-		MeetingsPort: 10301, DiarThreshold: 0.70, DiarClusterThreshold: 0.5}
+		TranslatePort: 10302, MeetingsPort: 10301, DiarThreshold: 0.70, DiarClusterThreshold: 0.5}
 }
 
 // Dir is the app's data directory (%APPDATA%\tts-sst), created on demand.
@@ -88,6 +94,9 @@ func Load() Config {
 	}
 	if c.MeetingsPort <= 0 {
 		c.MeetingsPort = 10301
+	}
+	if c.TranslatePort <= 0 {
+		c.TranslatePort = 10302
 	}
 	if c.DiarThreshold <= 0 {
 		c.DiarThreshold = 0.70
