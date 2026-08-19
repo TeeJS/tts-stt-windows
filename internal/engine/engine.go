@@ -117,17 +117,9 @@ type Recognizer struct {
 	rec *sherpa.OfflineRecognizer
 }
 
-// NewWhisperTranslate loads a whisper model in "translate" mode: it emits ENGLISH from any spoken
-// language (sherpa's Task:"translate"; whisper-only). Language is left empty so the source language
-// is auto-detected. Used by the dedicated translate STT endpoint (see cmd/tts-sst/translate.go).
-func NewWhisperTranslate(modelDir string, numThreads int) (*Recognizer, error) {
-	return NewWhisperSTT(modelDir, "", "translate", numThreads)
-}
-
 // NewWhisperSTT loads a whisper model directory as distributed in sherpa-onnx's asr-models
 // releases (sherpa-onnx-whisper-*: *-encoder.int8.onnx, *-decoder.int8.onnx, *-tokens.txt).
-// `task` is sherpa's whisper task: "transcribe" (same-language text) or "translate" (English out).
-func NewWhisperSTT(modelDir, language, task string, numThreads int) (*Recognizer, error) {
+func NewWhisperSTT(modelDir, language string, numThreads int) (*Recognizer, error) {
 	// sherpa-onnx whisper archives carry BOTH fp32 and int8 variants of each model file;
 	// prefer int8 (much faster on CPU, negligible quality cost for dictation).
 	encoder, err := findPreferred(modelDir, "*encoder*.int8.onnx", "*encoder*.onnx")
@@ -145,7 +137,7 @@ func NewWhisperSTT(modelDir, language, task string, numThreads int) (*Recognizer
 	cfg := sherpa.OfflineRecognizerConfig{
 		FeatConfig: sherpa.FeatureConfig{SampleRate: 16000, FeatureDim: 80},
 		ModelConfig: sherpa.OfflineModelConfig{
-			Whisper:    sherpa.OfflineWhisperModelConfig{Encoder: encoder, Decoder: decoder, Language: language, Task: task},
+			Whisper:    sherpa.OfflineWhisperModelConfig{Encoder: encoder, Decoder: decoder, Language: language, Task: "transcribe"},
 			Tokens:     tokens,
 			NumThreads: numThreads,
 			Provider:   "cpu",
@@ -165,7 +157,7 @@ func NewSTT(modelDir, family, language string, numThreads int) (*Recognizer, err
 	}
 	switch family {
 	case "whisper":
-		return NewWhisperSTT(modelDir, language, "transcribe", numThreads)
+		return NewWhisperSTT(modelDir, language, numThreads)
 	case "parakeet":
 		return NewTransducerSTT(modelDir, numThreads)
 	case "sense-voice":

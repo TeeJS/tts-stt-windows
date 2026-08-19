@@ -128,7 +128,7 @@ func loadSTT(dir, language string, threads int) (*engine.Recognizer, error) {
 	if m, _ := filepath.Glob(filepath.Join(dir, "joiner*.onnx")); len(m) > 0 {
 		return engine.NewTransducerSTT(dir, threads)
 	}
-	return engine.NewWhisperSTT(dir, language, "transcribe", threads)
+	return engine.NewWhisperSTT(dir, language, threads)
 }
 
 // ---- mock engines: protocol testing without models or a tray ----

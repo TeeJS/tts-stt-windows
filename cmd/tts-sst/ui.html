@@ -134,12 +134,6 @@
         <select id="lang-speech"></select>
       </div>
       <div id="list-speech"></div>
-      <div class="row" style="margin-top:16px">
-        <label for="translateEndpoint">Translate to English (extra endpoint)
-          <span class="hint" id="translateHint"></span>
-        </label>
-        <input type="checkbox" id="translateEndpoint" style="width:20px;height:20px;accent-color:var(--accent)">
-      </div>
     </div>
 
     <div id="tab-meetings" hidden>
@@ -547,11 +541,6 @@ function render() {
   $('#speedVal').textContent = Number(state.speed).toFixed(2).replace(/0$/,'') + '×';
   $('#filterNS').checked = state.filterNonSpeech;
   $('#portsHint').textContent = `Serving speech on port ${state.ports.stt}, voice on port ${state.ports.tts}.`;
-  $('#translateEndpoint').checked = state.translate;
-  $('#translateEndpoint').disabled = !state.translateAvailable;
-  $('#translateHint').textContent = state.translateAvailable
-    ? `Adds a second speech endpoint on port ${state.ports.translate} that turns any spoken language into English — so a client can request live translation while normal dictation keeps serving on port ${state.ports.stt}.`
-    : 'Turns any spoken language into English on a second port. Whisper only — pick a Whisper speech model above to enable this.';
 
   if (!state.setup) {
     // Seed the card ONCE: render() runs again on every state poll (4s idle, 700ms
@@ -638,7 +627,6 @@ $('#setLang').onchange = async e => {
 $('#speed').oninput = e => { $('#speedVal').textContent = Number(e.target.value).toFixed(2).replace(/0$/,'') + '×'; };
 $('#speed').onchange = async e => { await post('/api/settings', {speed: Number(e.target.value)}); };
 $('#filterNS').onchange = async e => { await post('/api/settings', {filterNonSpeech: e.target.checked}); };
-$('#translateEndpoint').onchange = async e => { await post('/api/settings', {translate: e.target.checked}); load(); };
 $('#diarThreshold').onchange = async e => {
   const t = Number(e.target.value);
   if (t >= 0.3 && t <= 0.95) await post('/api/meetings', {threshold: t});
