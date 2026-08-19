@@ -58,13 +58,17 @@ type service struct {
 	diarSvc *diarize.Service
 	diarRec *engine.Recognizer // dedicated transcriber; nil when sharing the live STT
 
+	// The translate endpoint (Whisper task=translate on its own Wyoming port) — nil while off.
+	transRec *engine.Recognizer
+
 	// Listeners are held so a service can be switched off at runtime: closing the listener makes
 	// its accept loop return, which frees the port instead of leaving something bound that answers
 	// with nothing. Guarded by their own mutex, since enabling one blocks on a model load.
-	lnMu   sync.Mutex
-	sttLn  net.Listener
-	ttsLn  net.Listener
-	meetLn net.Listener
+	lnMu    sync.Mutex
+	sttLn   net.Listener
+	ttsLn   net.Listener
+	meetLn  net.Listener
+	transLn net.Listener
 }
 
 func newService(cfg config.Config, modelsDir string, threads int) *service {
@@ -99,11 +103,21 @@ func (s *service) setBusy(what string) {
 // running composes the steady-state status line from whatever is actually loaded.
 func (s *service) running() {
 	stt, tts := s.ActiveSTT(), s.ActiveTTS()
-	if isOff(stt) && isOff(tts) && !s.meetingsOn() {
+	if isOff(stt) && isOff(tts) && !s.meetingsOn() && !s.translateOn() {
 		s.setStatus("All services are off — nothing is being served")
 		return
 	}
 	line := fmt.Sprintf("Running — %s · %s", label(stt), label(tts))
+	if s.translateOn() {
+		s.lnMu.Lock()
+		listening := s.transLn != nil
+		s.lnMu.Unlock()
+		if listening {
+			line += fmt.Sprintf(" · translate :%d", s.cfg.TranslatePort)
+		} else {
+			line += " · translate unavailable (needs a Whisper model)"
+		}
+	}
 	if s.meetingsOn() {
 		// Report what is true: the port-busy failure used to be overwritten by
 		// this line claiming meetings was being served.
@@ -183,8 +197,14 @@ func (s *service) Start() {
 				s.setStatus("Meetings service load failed: %v", err)
 			}
 		}
+		if s.translateOn() {
+			if err := s.useTranslate(true); err != nil {
+				s.setStatus("Translate endpoint load failed: %v", err)
+			}
+		}
 		s.syncListeners()
 		s.syncMeetingsListener()
+		s.syncTranslateListener()
 		s.running()
 	}()
 }
@@ -391,6 +411,15 @@ func (s *service) SwitchSTT(id string) error {
 	s.cfg.STTModel = id
 	config.Save(s.cfg)
 	s.syncListeners()
+	// The translate endpoint reuses the active STT model — rebuild it against the new pick (or drop
+	// it if the new model isn't Whisper). useTranslate tears down first, so a non-Whisper pick just
+	// leaves translate off until a Whisper model is chosen again.
+	if s.translateOn() {
+		if err := s.useTranslate(true); err != nil {
+			s.setStatus("Translate endpoint: %v", err)
+		}
+		s.syncTranslateListener()
+	}
 	s.running()
 	return nil
 }

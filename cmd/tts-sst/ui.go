@@ -151,24 +151,29 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 			speakers = d
 		}
 	}
+	// Translate is Whisper-only, so the toggle is offered only when the active STT model is Whisper.
+	sttM, sttOK := models.ByID(svc.ActiveSTT())
+	translateAvailable := sttOK && sttM.Family == "whisper"
 	writeJSON(w, map[string]any{
-		"status":          svc.Status(),
-		"busy":            svc.Busy(),
-		"language":        svc.cfg.Language,
-		"browseLanguage":  svc.cfg.BrowseLanguage,
-		"systemRegion":    systemRegion,
-		"speed":           svc.cfg.Speed,
-		"setup":           svc.cfg.Setup,
-		"filterNonSpeech": svc.cfg.FilterNonSpeech,
-		"activeTTS":       svc.ActiveTTS(),
-		"activeSTT":       svc.ActiveSTT(),
-		"languages":       models.Languages(),
-		"models":          out,
-		"ports":           map[string]int{"stt": svc.cfg.STTPort, "tts": svc.cfg.TTSPort, "meetings": svc.cfg.MeetingsPort},
-		"meetings":        svc.meetingsOn(),
-		"bind":            svc.cfg.Bind,
-		"diarThreshold":   svc.cfg.DiarThreshold,
-		"speakers":        speakers,
+		"status":             svc.Status(),
+		"busy":               svc.Busy(),
+		"language":           svc.cfg.Language,
+		"browseLanguage":     svc.cfg.BrowseLanguage,
+		"systemRegion":       systemRegion,
+		"speed":              svc.cfg.Speed,
+		"setup":              svc.cfg.Setup,
+		"filterNonSpeech":    svc.cfg.FilterNonSpeech,
+		"activeTTS":          svc.ActiveTTS(),
+		"activeSTT":          svc.ActiveSTT(),
+		"languages":          models.Languages(),
+		"models":             out,
+		"ports":              map[string]int{"stt": svc.cfg.STTPort, "tts": svc.cfg.TTSPort, "meetings": svc.cfg.MeetingsPort, "translate": svc.cfg.TranslatePort},
+		"meetings":           svc.meetingsOn(),
+		"translate":          svc.translateOn(),
+		"translateAvailable": translateAvailable,
+		"bind":               svc.cfg.Bind,
+		"diarThreshold":      svc.cfg.DiarThreshold,
+		"speakers":           speakers,
 	})
 }
 
@@ -353,6 +358,7 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		Speed           *float32 `json:"speed"`
 		Setup           *bool    `json:"setup"`
 		FilterNonSpeech *bool    `json:"filterNonSpeech"`
+		Translate       *bool    `json:"translate"` // enable/disable the Whisper→English translate endpoint
 		// Which services the setup card enables. Absent (older page) = the
 		// pre-choice behavior: voice and dictation on, transcription off.
 		Services *struct {
@@ -376,6 +382,11 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.FilterNonSpeech != nil {
 		u.svc.SetFilterNonSpeech(*body.FilterNonSpeech)
+	}
+	if body.Translate != nil {
+		// Errors (e.g. the active model isn't Whisper) surface on the status line; the page re-reads
+		// state and reflects the real on/off, so a failed enable simply stays off.
+		_ = u.svc.SwitchTranslate(*body.Translate)
 	}
 	// Answering the language question releases the service to pick and download models for the
 	// language the user actually speaks — on first run, and again whenever they re-run it.
