@@ -131,9 +131,10 @@ func DefaultsFor(lang string) (voice Model, stt Model) {
 	}
 	// Voices: prefer medium quality — low is noticeably worse, high costs far more CPU per word.
 	voice = best(ForLanguage(TTS, lang), func(m Model) bool { return m.Quality == "medium" })
-	// Speech: prefer Parakeet v3 where it applies (fastest good multilingual model, and Handy's
-	// default for the same reason); otherwise the smallest model covering the language.
-	stt = best(ForLanguage(STT, lang), func(m Model) bool { return m.ID == "parakeet-tdt-0.6b-v3" })
+	// Speech: prefer Whisper base — multilingual, good accuracy on CPU, and the only family that can
+	// drive the translate-to-English endpoint (Whisper's translate task); otherwise the smallest
+	// model covering the language.
+	stt = best(ForLanguage(STT, lang), func(m Model) bool { return m.ID == "whisper-base" })
 	return voice, stt
 }
 
