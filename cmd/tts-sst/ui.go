@@ -155,6 +155,7 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 		"status":          svc.Status(),
 		"busy":            svc.Busy(),
 		"language":        svc.cfg.Language,
+		"sttAutoLanguage": svc.cfg.SttAutoLanguage,
 		"browseLanguage":  svc.cfg.BrowseLanguage,
 		"systemRegion":    systemRegion,
 		"speed":           svc.cfg.Speed,
@@ -348,8 +349,9 @@ func (u *uiServer) handleRemove(w http.ResponseWriter, r *http.Request) {
 func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Language        string   `json:"language"`
-		BrowseLanguage  *string  `json:"browseLanguage"` // pointer: "" is a real value (show all languages)
-		Voice           string   `json:"voice"`          // chosen in the setup card; "" = pick a default
+		SttAutoLanguage *bool    `json:"sttAutoLanguage"` // setup card: recognize any language (translation use)
+		BrowseLanguage  *string  `json:"browseLanguage"`  // pointer: "" is a real value (show all languages)
+		Voice           string   `json:"voice"`           // chosen in the setup card; "" = pick a default
 		Speed           *float32 `json:"speed"`
 		Setup           *bool    `json:"setup"`
 		FilterNonSpeech *bool    `json:"filterNonSpeech"`
@@ -367,6 +369,10 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Language != "" {
 		u.svc.SetLanguage(body.Language)
+	}
+	// Before the Setup block below, so CompleteSetup loads models with the right STT hint.
+	if body.SttAutoLanguage != nil {
+		u.svc.SetSttAutoLanguage(*body.SttAutoLanguage)
 	}
 	if body.Speed != nil {
 		u.svc.SetSpeed(*body.Speed)

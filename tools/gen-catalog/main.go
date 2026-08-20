@@ -269,9 +269,16 @@ func parseSTT(r ghRelease) []Entry {
 			}
 			e.ID = "whisper-" + name
 			e.Name = "Whisper " + strings.ReplaceAll(name, ".en", " (English)")
-			if strings.HasSuffix(name, ".en") {
+			switch {
+			case strings.HasSuffix(name, ".en"):
 				e.Langs = []string{"en"}
-			} else {
+			case strings.Contains(name, "distil"):
+				// Every Distil-Whisper checkpoint is distilled on English data only — including the
+				// ones without a .en suffix (distil-large-v2/v3/v3.5). Fed foreign speech they emit
+				// a rough English rendering, which looks multilingual but isn't (bit a real user).
+				e.Langs = []string{"en"}
+				e.Notes = "English only (distilled)"
+			default:
 				e.Langs = []string{"multi"}
 				e.Notes = "99 languages"
 			}

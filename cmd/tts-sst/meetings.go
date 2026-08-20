@@ -135,7 +135,7 @@ func (s *service) useMeetings(on bool) error {
 	if sttID == s.ActiveSTT() {
 		rec = sharedSTT{s}
 	} else {
-		dedicated, err = engine.NewSTT(filepath.Join(s.modelsDir, sttM.Dir), sttM.Family, sttLanguage(sttM, s.cfg.Language), s.threads)
+		dedicated, err = engine.NewSTT(filepath.Join(s.modelsDir, sttM.Dir), sttM.Family, sttLanguage(sttM, s.sttHint()), s.threads)
 		if err != nil {
 			diar.Close()
 			return err
