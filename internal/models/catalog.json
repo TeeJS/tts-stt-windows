@@ -337,12 +337,12 @@
    "family": "whisper",
    "name": "Whisper distil-large-v2",
    "langs": [
-    "multi"
+    "en"
    ],
    "size": 576607838,
    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-distil-large-v2.tar.bz2",
    "dir": "sherpa-onnx-whisper-distil-large-v2",
-   "notes": "99 languages"
+   "notes": "English only (distilled)"
   },
   {
    "id": "whisper-distil-large-v3",
@@ -350,12 +350,12 @@
    "family": "whisper",
    "name": "Whisper distil-large-v3",
    "langs": [
-    "multi"
+    "en"
    ],
    "size": 529350808,
    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-distil-large-v3.tar.bz2",
    "dir": "sherpa-onnx-whisper-distil-large-v3",
-   "notes": "99 languages"
+   "notes": "English only (distilled)"
   },
   {
    "id": "whisper-distil-large-v3.5",
@@ -363,12 +363,12 @@
    "family": "whisper",
    "name": "Whisper distil-large-v3.5",
    "langs": [
-    "multi"
+    "en"
    ],
    "size": 528659059,
    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-distil-large-v3.5.tar.bz2",
    "dir": "sherpa-onnx-whisper-distil-large-v3.5",
-   "notes": "99 languages"
+   "notes": "English only (distilled)"
   },
   {
    "id": "whisper-distil-medium.en",

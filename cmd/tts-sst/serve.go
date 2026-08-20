@@ -312,7 +312,7 @@ func (s *service) useSTT(id string) error {
 	}
 	s.setBusy("Loading " + m.Name + "…")
 	defer s.setBusy("")
-	rec, err := engine.NewSTT(filepath.Join(s.modelsDir, m.Dir), m.Family, sttLanguage(m, s.cfg.Language), s.threads)
+	rec, err := engine.NewSTT(filepath.Join(s.modelsDir, m.Dir), m.Family, sttLanguage(m, s.sttHint()), s.threads)
 	if err != nil {
 		return err
 	}
@@ -322,6 +322,16 @@ func (s *service) useSTT(id string) error {
 	s.mu.Unlock()
 	closeAsync(old) // Close waits out any in-flight Transcribe before freeing
 	return nil
+}
+
+// sttHint is the user language passed on to multi-language models — or "" (auto-detect per
+// utterance) when the user said the machine will hear languages other than their own
+// (SttAutoLanguage, the first-run "used for translation" answer).
+func (s *service) sttHint() string {
+	if s.cfg.SttAutoLanguage {
+		return ""
+	}
+	return s.cfg.Language
 }
 
 // sttLanguage is the language hint passed to models that accept one. Multi-language models take
@@ -449,6 +459,14 @@ func (s *service) SetSpeed(speed float32) {
 // SetLanguage persists the user's language; it drives multi-language model hints and default picks.
 func (s *service) SetLanguage(lang string) {
 	s.cfg.Language = lang
+	config.Save(s.cfg)
+}
+
+// SetSttAutoLanguage persists the "recognize any language" answer (see config.SttAutoLanguage).
+// The active STT keeps its current hint until the next model (re)load — the setup flow that sets
+// this always reloads models right after.
+func (s *service) SetSttAutoLanguage(on bool) {
+	s.cfg.SttAutoLanguage = on
 	config.Save(s.cfg)
 }
 

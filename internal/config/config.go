@@ -19,6 +19,11 @@ type Config struct {
 	PrevSTTModel string `json:"prevSttModel"`
 	PrevTTSVoice string `json:"prevTtsVoice"`
 	Language     string `json:"language"` // the user's language: drives defaults and multi-language hints
+	// SttAutoLanguage drops the Language hint for multi-language STT models so they detect the
+	// spoken language per utterance — required when the audio isn't the user's own language
+	// (live translation). A pinned hint makes whisper mistranslate foreign speech (see
+	// sttLanguage in cmd/tts-sst/serve.go).
+	SttAutoLanguage bool `json:"sttAutoLanguage"`
 	// BrowseLanguage is the language the model lists in the settings page are filtered to.
 	// Deliberately separate from Language: filtering the list to audition German voices must not
 	// silently change the language hint handed to speech recognition. "" follows Language.

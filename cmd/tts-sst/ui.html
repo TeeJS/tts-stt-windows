@@ -206,6 +206,7 @@
     <div class="svc-pick">
       <label><input type="checkbox" id="svcTTS" checked> <span><b>Speak text out loud</b><span class="hint">A voice reads replies and announcements to you (text-to-speech).</span></span></label>
       <label><input type="checkbox" id="svcSTT" checked> <span><b>Turn your speech into text</b><span class="hint">Dictation: apps send your voice here and get words back (speech-to-text).</span></span></label>
+      <label><input type="checkbox" id="svcAnyLang"> <span><b>Recognize any language</b><span class="hint">For live translation: transcribe whatever language is spoken, not just yours. Leave off for everyday dictation — a fixed language is more accurate.</span></span></label>
       <label><input type="checkbox" id="svcMeet"> <span><b>Transcribe meeting recordings</b><span class="hint">Apps send a recording and get back a transcript with named speakers.</span></span></label>
     </div>
     <div id="setupVoiceRow">
@@ -550,6 +551,7 @@ function render() {
       setupSeeded = true;
       langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
       $('#setupLang').value = state.language;
+      $('#svcAnyLang').checked = !!state.sttAutoLanguage;
       setupVoices();
     }
     $('#setup').classList.remove('hidden');
@@ -678,6 +680,7 @@ $('#testBtn').onclick = async () => {
 $('#rerunSetup').onclick = () => {
   langOptions($('#setupLang'), state.models.filter(m => m.langs[0] !== 'multi'), false);
   $('#setupLang').value = state.language;
+  $('#svcAnyLang').checked = !!state.sttAutoLanguage;
   $('#svcTTS').checked = state.activeTTS !== 'off';
   $('#svcSTT').checked = state.activeSTT !== 'off';
   $('#svcMeet').checked = !!state.meetings;
@@ -695,6 +698,7 @@ $('#setupGo').onclick = async () => {
   await post('/api/settings', {
     language: $('#setupLang').value,
     voice: $('#svcTTS').checked ? $('#setupVoice').value : '',
+    sttAutoLanguage: $('#svcAnyLang').checked,
     setup: true,
     services: {tts: $('#svcTTS').checked, stt: $('#svcSTT').checked, meetings: $('#svcMeet').checked},
   });
