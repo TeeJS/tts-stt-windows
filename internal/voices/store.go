@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,6 +42,10 @@ type Store struct {
 	dir string
 }
 
+// writeMu serializes Save/Rename/Delete across Store instances (the UI makes one per request),
+// so two uploads under the same name can't both pass the exists check.
+var writeMu sync.Mutex
+
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -65,8 +70,9 @@ func Name(id string) (string, bool) {
 // diarization enrollment store) and maps it to its clip path.
 func (s *Store) pathFor(name string) (string, error) {
 	name = strings.TrimSpace(name)
+	// Path separators plus the characters NTFS refuses in a file name.
 	if name == "" || name == "." || name == ".." ||
-		strings.ContainsAny(name, `/\:`) || strings.ContainsRune(name, 0) {
+		strings.ContainsAny(name, `/\:<>"|?*`) || strings.ContainsRune(name, 0) {
 		return "", fmt.Errorf("%w: %q", ErrBadName, name)
 	}
 	p := filepath.Join(s.dir, name+".wav")
@@ -102,6 +108,8 @@ func (s *Store) Save(name string, samples []float32) error {
 	if err != nil {
 		return err
 	}
+	writeMu.Lock()
+	defer writeMu.Unlock()
 	secs := float64(len(samples)) / SampleRate
 	if secs < MinSeconds {
 		return fmt.Errorf("%w: %.1fs (need at least %.0fs)", ErrTooShort, secs, MinSeconds)
@@ -142,6 +150,8 @@ func (s *Store) Delete(name string) error {
 	if err != nil {
 		return err
 	}
+	writeMu.Lock()
+	defer writeMu.Unlock()
 	if err := os.Remove(p); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%w: %q", ErrNotFound, name)
@@ -161,6 +171,8 @@ func (s *Store) Rename(from, to string) error {
 	if err != nil {
 		return err
 	}
+	writeMu.Lock()
+	defer writeMu.Unlock()
 	if _, err := os.Stat(src); os.IsNotExist(err) {
 		return fmt.Errorf("%w: %q", ErrNotFound, from)
 	}
