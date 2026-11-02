@@ -57,6 +57,32 @@
  },
  "entries": [
   {
+   "id": "eres2net-en-voxceleb",
+   "kind": "diar",
+   "family": "embedding",
+   "name": "ERes2Net speaker embedding",
+   "langs": [
+    "multi"
+   ],
+   "size": 26485263,
+   "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
+   "dir": "eres2net-en-voxceleb",
+   "notes": "Voice fingerprints for recognizing enrolled speakers."
+  },
+  {
+   "id": "pyannote-segmentation-3-0",
+   "kind": "diar",
+   "family": "segmentation",
+   "name": "Pyannote segmentation 3.0",
+   "langs": [
+    "multi"
+   ],
+   "size": 6958444,
+   "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+   "dir": "sherpa-onnx-pyannote-segmentation-3-0",
+   "notes": "Splits a meeting recording into speaker turns."
+  },
+  {
    "id": "dolphin-base-ctc-multi-lang",
    "kind": "stt",
    "family": "dolphin",
@@ -3312,30 +3338,17 @@
    "dir": "vits-piper-zh_CN-xiao_ya-medium-int8"
   },
   {
-   "id": "pyannote-segmentation-3-0",
-   "kind": "diar",
-   "family": "segmentation",
-   "name": "Pyannote segmentation 3.0",
+   "id": "pocket-tts",
+   "kind": "tts",
+   "family": "pocket",
+   "name": "PocketTTS (voice cloning)",
    "langs": [
-    "multi"
+    "en"
    ],
-   "size": 6958444,
-   "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
-   "dir": "sherpa-onnx-pyannote-segmentation-3-0",
-   "notes": "Splits a meeting recording into speaker turns."
-  },
-  {
-   "id": "eres2net-en-voxceleb",
-   "kind": "diar",
-   "family": "embedding",
-   "name": "ERes2Net speaker embedding",
-   "langs": [
-    "multi"
-   ],
-   "size": 26485263,
-   "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
-   "dir": "eres2net-en-voxceleb",
-   "notes": "Voice fingerprints for recognizing enrolled speakers."
+   "size": 98336520,
+   "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2",
+   "dir": "sherpa-onnx-pocket-tts-int8-2026-01-26",
+   "notes": "Clones a voice from a short clip. Add clips under My Voices."
   }
  ]
 }

@@ -25,6 +25,9 @@ func TestResolve(t *testing.T) {
 		{"no-such-model", "fallback", models.STT, "unknown id falls back"},
 		{"piper-en-GB-alan-medium", "piper-en-GB-alan-medium", models.TTS, "catalog id passes through"},
 		{"piper-en-GB-alan-medium", "fallback", models.STT, "right id, wrong service, falls back"},
+		{"pocket:no-such-clip-" + itoa(int(time.Now().UnixNano()%1e6)), "fallback", models.TTS, "cloned voice whose clip is gone falls back"},
+		{"pocket:anything", "fallback", models.STT, "cloned voice id is never a speech model"},
+		{"pocket-tts", "pocket-tts", models.TTS, "the cloning model is a catalog entry; resolve passes it, the UI hides it"},
 	}
 	for _, c := range cases {
 		if got := s.resolve(c.in, c.kind, "fallback"); got != c.want {

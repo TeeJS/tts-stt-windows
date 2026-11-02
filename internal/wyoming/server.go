@@ -18,7 +18,8 @@ type AudioFormat struct {
 type STTFunc func(pcm []byte, format AudioFormat, language string) (string, error)
 
 // TTSFunc synthesizes text to raw PCM, reporting the PCM's actual format.
-type TTSFunc func(text string) (pcm []byte, format AudioFormat, err error)
+// voice is the requested voice name from the synthesize event, or "" for the server's default.
+type TTSFunc func(text, voice string) (pcm []byte, format AudioFormat, err error)
 
 // Info is the payload served for a `describe` event — how Wyoming clients (Home Assistant in
 // particular) discover what a server offers. Kept as loose maps: the schema is large, we only
@@ -103,7 +104,13 @@ func ServeTTS(l net.Listener, tts TTSFunc, info InfoFunc, logf func(string, ...a
 					logf("tts: synthesize with empty text, ignoring")
 					continue
 				}
-				pcm, format, err := tts(text)
+				// Optional voice{name}: a client may ask for one of the voices `describe`
+				// advertised. The service decides whether it can honor it.
+				var voice string
+				if v, ok := ev.Data["voice"].(map[string]any); ok {
+					voice, _ = v["name"].(string)
+				}
+				pcm, format, err := tts(text, voice)
 				if err != nil {
 					logf("tts error: %v", err)
 					return err // client sees the connection close, its own timeout/error path handles it
@@ -176,8 +183,10 @@ func formatFromData(d map[string]any) AudioFormat {
 }
 
 // BuildInfo assembles a minimal `info` reply advertising one ASR and/or one TTS service —
-// enough for Home Assistant's discovery to list the server and its model/voice.
-func BuildInfo(asrModel, ttsVoice string) Info {
+// enough for Home Assistant's discovery to list the server and its model/voice. The first TTS
+// voice is the default; any further ones are selectable per request with synthesize{voice{name}}.
+// Empty names are skipped, so a service that is off advertises nothing.
+func BuildInfo(asrModel string, ttsVoices ...string) Info {
 	svc := func(name, desc string, attr string, entries []map[string]any) map[string]any {
 		return map[string]any{
 			"name": name, "description": desc, "attribution": map[string]any{"name": "tts-sst", "url": "https://github.com/TeeJS/tts-stt-windows"},
@@ -191,11 +200,18 @@ func BuildInfo(asrModel, ttsVoice string) Info {
 				"attribution": map[string]any{"name": "sherpa-onnx", "url": "https://github.com/k2-fsa/sherpa-onnx"}, "version": "1"},
 		})}
 	}
-	if ttsVoice != "" {
-		info["tts"] = []map[string]any{svc("tts-sst", "Local Windows text-to-speech", "voices", []map[string]any{
-			{"name": ttsVoice, "description": ttsVoice, "installed": true, "languages": []string{"en"},
-				"attribution": map[string]any{"name": "sherpa-onnx", "url": "https://github.com/k2-fsa/sherpa-onnx"}, "version": "1"},
-		})}
+	var voices []map[string]any
+	for _, v := range ttsVoices {
+		if v == "" {
+			continue
+		}
+		voices = append(voices, map[string]any{
+			"name": v, "description": v, "installed": true, "languages": []string{"en"},
+			"attribution": map[string]any{"name": "sherpa-onnx", "url": "https://github.com/k2-fsa/sherpa-onnx"}, "version": "1",
+		})
+	}
+	if len(voices) > 0 {
+		info["tts"] = []map[string]any{svc("tts-sst", "Local Windows text-to-speech", "voices", voices)}
 	}
 	return info
 }

@@ -6,17 +6,27 @@ import (
 	"net"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/TeeJS/tts-stt-windows/internal/config"
 	"github.com/TeeJS/tts-stt-windows/internal/diarize"
 	"github.com/TeeJS/tts-stt-windows/internal/engine"
 	"github.com/TeeJS/tts-stt-windows/internal/models"
+	"github.com/TeeJS/tts-stt-windows/internal/voices"
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
 )
 
 // sapiVoiceID is the built-in Windows voice: not in the catalog (nothing to download) but
 // selectable like any other, and the only voice guaranteed to exist before any download.
 const sapiVoiceID = "windows-builtin"
+
+// pocketModelID is the catalog entry for the voice-cloning model. It is never selected directly:
+// the user picks a cloned voice ("pocket:<name>", see internal/voices) and the model follows.
+const pocketModelID = "pocket-tts"
+
+// voicesDir holds the reference clips cloned voices are built from — one WAV per voice; copy
+// the folder to back them up or move machines.
+func voicesDir() string { return filepath.Join(config.Dir(), "voices") }
 
 // offID marks a service the user has switched off. Stored in the same config field as a model id
 // (like sapiVoiceID) rather than as a separate flag, so "which model, if any" stays one value.
@@ -45,6 +55,7 @@ type service struct {
 	noDownload bool
 
 	mu       sync.RWMutex
+	switchMu sync.Mutex // serializes whole TTS switches: a clone swap reads the live engine, then reinstalls it
 	stt      *engine.Recognizer
 	tts      engine.TTS // *engine.PiperTTS or *engine.SapiTTS
 	sttID    string
@@ -128,6 +139,9 @@ func label(id string) string {
 	case "":
 		return "none"
 	}
+	if name, ok := voices.Name(id); ok {
+		return name + " (cloned)"
+	}
 	if m, ok := models.ByID(id); ok {
 		if m.Region != "" {
 			return m.Name + " (" + m.Region + ")"
@@ -140,7 +154,24 @@ func label(id string) string {
 // info answers a `describe` with what is true right now — which services are actually running and
 // which model each is using.
 func (s *service) info() wyoming.Info {
-	return wyoming.BuildInfo(advertised(s.ActiveSTT()), advertised(s.ActiveTTS()))
+	active := s.ActiveTTS()
+	ttsVoices := []string{advertised(active)}
+	// Every cloned voice is selectable per request while a clone is active (see synthesize), so
+	// advertise them by id — the active one too — because a client sends the advertised name
+	// back as voice.name.
+	if _, cloned := voices.Name(active); cloned {
+		ttsVoices[0] = active
+		if store, err := voices.NewStore(voicesDir()); err == nil {
+			if names, err := store.List(); err == nil {
+				for _, n := range names {
+					if id := voices.ID(n); id != active {
+						ttsVoices = append(ttsVoices, id)
+					}
+				}
+			}
+		}
+	}
+	return wyoming.BuildInfo(advertised(s.ActiveSTT()), ttsVoices...)
 }
 
 // advertised is the model name to publish in Wyoming discovery, or "" for a service that is off
@@ -201,6 +232,13 @@ func (s *service) resolve(id string, kind models.Kind, fallback string) string {
 	}
 	if kind == models.TTS && id == sapiVoiceID {
 		return id
+	}
+	if name, ok := voices.Name(id); ok && kind == models.TTS {
+		if store, err := voices.NewStore(voicesDir()); err == nil && store.Exists(name) {
+			return id
+		}
+		log.Printf("configured cloned voice %q has no clip in %s; falling back to %q", name, voicesDir(), fallback)
+		return fallback
 	}
 	if m, ok := models.ByID(id); ok && m.Kind == kind {
 		return id
@@ -278,14 +316,41 @@ func (s *service) transcribe(pcm []byte, f wyoming.AudioFormat, _ string) (strin
 	return text, nil
 }
 
-func (s *service) synthesize(text string) ([]byte, wyoming.AudioFormat, error) {
+func (s *service) synthesize(text, requested string) ([]byte, wyoming.AudioFormat, error) {
 	s.mu.RLock()
-	voice := s.tts
+	voice, activeID := s.tts, s.ttsID
 	s.mu.RUnlock()
 	if voice == nil {
 		return nil, wyoming.AudioFormat{}, fmt.Errorf("no voice loaded")
 	}
-	pcm, rate, err := voice.Synthesize(text)
+	t0 := time.Now()
+	var (
+		pcm  []byte
+		rate int
+		err  error
+	)
+	// A client may name one of the cloned voices `describe` advertised. Honored when a PocketTTS
+	// engine is live (a clone is the active voice): the clip is swapped for this request only,
+	// so agents can each speak in their own voice without touching Settings. Any other name —
+	// a catalog voice, an unknown clone, or when Piper/SAPI is active — falls back to the
+	// active voice, which is what every client got before per-request voices existed.
+	if name, ok := voices.Name(requested); ok && requested != activeID {
+		if p, live := voice.(*engine.PocketTTS); live {
+			if store, serr := voices.NewStore(voicesDir()); serr == nil {
+				if ref, refRate, lerr := store.Load(name); lerr == nil {
+					pcm, rate, err = p.SynthesizeWith(text, ref, refRate)
+					goto done
+				}
+			}
+		}
+		log.Printf("tts: requested voice %q unavailable, using %s", requested, label(activeID))
+	}
+	pcm, rate, err = voice.Synthesize(text)
+done:
+	if err == nil && rate > 0 {
+		audio := float64(len(pcm)/2) / float64(rate)
+		log.Printf("tts: %.1fs audio in %v (%.2fx realtime) for %d chars", audio, time.Since(t0).Round(time.Millisecond), audio/time.Since(t0).Seconds(), len(text))
+	}
 	return pcm, wyoming.AudioFormat{Rate: rate, Width: 2, Channels: 1}, err
 }
 
@@ -352,6 +417,8 @@ func (s *service) useTTS(id string) error {
 	if id == "" {
 		return fmt.Errorf("no voice chosen")
 	}
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
 	if isOff(id) {
 		s.mu.Lock()
 		old := s.tts
@@ -363,6 +430,12 @@ func (s *service) useTTS(id string) error {
 	var voice engine.TTS
 	if id == sapiVoiceID {
 		voice = engine.NewSapiTTS()
+	} else if name, ok := voices.Name(id); ok {
+		v, err := s.usePocketVoice(name)
+		if err != nil {
+			return err
+		}
+		voice = v
 	} else {
 		m, ok := models.ByID(id)
 		if !ok || m.Kind != models.TTS {
@@ -384,8 +457,49 @@ func (s *service) useTTS(id string) error {
 	old := s.tts
 	s.tts, s.ttsID = voice, id
 	s.mu.Unlock()
-	closeAsync(old)
+	if old != voice { // switching between two cloned voices keeps the same PocketTTS engine
+		closeAsync(old)
+	}
 	return nil
+}
+
+// usePocketVoice activates a cloned voice: the shared pocket-tts model (downloaded on first use)
+// plus the named reference clip from voicesDir(). When a PocketTTS engine is already live only
+// the clip changes, which is near-instant — the model stays loaded.
+func (s *service) usePocketVoice(name string) (engine.TTS, error) {
+	store, err := voices.NewStore(voicesDir())
+	if err != nil {
+		return nil, err
+	}
+	samples, rate, err := store.Load(name)
+	if err != nil {
+		return nil, fmt.Errorf("cloned voice %q: %w", name, err)
+	}
+	s.mu.RLock()
+	live, _ := s.tts.(*engine.PocketTTS)
+	s.mu.RUnlock()
+	if live == nil {
+		m, ok := models.ByID(pocketModelID)
+		if !ok {
+			return nil, fmt.Errorf("%s is not in the catalog", pocketModelID)
+		}
+		if err := s.ensure(m); err != nil {
+			return nil, err
+		}
+		s.setBusy("Loading " + m.Name + "…")
+		defer s.setBusy("")
+		t0 := time.Now()
+		live, err = engine.NewPocketTTS(filepath.Join(s.modelsDir, m.Dir), s.threads)
+		if err != nil {
+			return nil, err
+		}
+		live.SetSpeed(s.cfg.Speed)
+		log.Printf("pocket-tts: model loaded in %v", time.Since(t0).Round(time.Millisecond))
+	}
+	// sherpa resamples the clip to its own 24 kHz internally; pass the stored rate as-is.
+	live.SetReference(samples, rate)
+	log.Printf("pocket-tts: voice %q (%.1fs clip)", name, float64(len(samples))/float64(rate))
+	return live, nil
 }
 
 // SwitchSTT / SwitchTTS are the UI entry points: swap engines, bring the listener into line with
@@ -449,12 +563,16 @@ func (s *service) SetSpeed(speed float32) {
 	s.cfg.Speed = speed
 	config.Save(s.cfg)
 	s.mu.RLock()
-	v, ok := s.tts.(*engine.PiperTTS)
+	v, ok := s.tts.(speedSetter)
 	s.mu.RUnlock()
 	if ok {
 		v.SetSpeed(speed)
 	}
 }
+
+// speedSetter is implemented by the engines with a speaking-rate control (Piper, PocketTTS);
+// the Windows built-in voice ignores the slider.
+type speedSetter interface{ SetSpeed(float32) }
 
 // SetLanguage persists the user's language; it drives multi-language model hints and default picks.
 func (s *service) SetLanguage(lang string) {

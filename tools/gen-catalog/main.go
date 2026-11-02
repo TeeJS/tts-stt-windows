@@ -164,6 +164,10 @@ var piperRe = regexp.MustCompile(`^vits-piper-([a-z]{2,3}(?:_[A-Za-z]{2,3})?)-(.
 // coqui assets are `vits-coqui-<lang>-<dataset>[-...]` — no quality tier, one per language/dataset.
 var coquiRe = regexp.MustCompile(`^vits-coqui-([a-z]{2,3})-(.+)\.tar\.bz2$`)
 
+// PocketTTS (Kyutai) is one voice-cloning model, re-released by date and as int8/fp32. It is not
+// a voice by itself: the user supplies a reference clip (My Voices) and picks `pocket:<name>`.
+var pocketRe = regexp.MustCompile(`^sherpa-onnx-pocket-tts-(int8-)?(\d{4}-\d{2}-\d{2})\.tar\.bz2$`)
+
 func parseTTS(r ghRelease) []Entry {
 	// Collect piper voices keyed by locale+voice+quality so int8/fp32/fp16 collapse to one entry.
 	type variant struct {
@@ -174,6 +178,8 @@ func parseTTS(r ghRelease) []Entry {
 	piper := map[string]map[string]variant{} // key -> variantName -> data
 	meta := map[string][3]string{}           // key -> {locale, voice, quality}
 	var entries []Entry
+	var pocket Entry // best PocketTTS build seen so far (newest date, then int8)
+	pocketDate := ""
 
 	for _, a := range r.Assets {
 		if !strings.HasSuffix(a.Name, ".tar.bz2") {
@@ -197,6 +203,24 @@ func parseTTS(r ghRelease) []Entry {
 				vName = "fp16"
 			}
 			piper[key][vName] = variant{a.BrowserDownloadURL, a.Size, strings.TrimSuffix(a.Name, ".tar.bz2")}
+			continue
+		}
+		if m := pocketRe.FindStringSubmatch(a.Name); m != nil {
+			dir := strings.TrimSuffix(a.Name, ".tar.bz2")
+			if pocket.ID == "" || better(m[2], pocketDate, dir, pocket.Dir) {
+				pocket = Entry{
+					ID:     "pocket-tts",
+					Kind:   "tts",
+					Family: "pocket",
+					Name:   "PocketTTS (voice cloning)",
+					Langs:  []string{"en"},
+					Size:   a.Size,
+					URL:    a.BrowserDownloadURL,
+					Dir:    dir,
+					Notes:  "Clones a voice from a short clip. Add clips under My Voices.",
+				}
+				pocketDate = m[2]
+			}
 			continue
 		}
 		if m := coquiRe.FindStringSubmatch(a.Name); m != nil {
@@ -237,6 +261,9 @@ func parseTTS(r ghRelease) []Entry {
 			URL:     v.url,
 			Dir:     v.dir,
 		})
+	}
+	if pocket.ID != "" {
+		entries = append(entries, pocket)
 	}
 	return entries
 }

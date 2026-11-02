@@ -27,6 +27,7 @@ Open **Settings** from the tray to browse everything, filtered by language and s
 |---|---|
 | Voices | 178 Piper + 25 Coqui voices across 47 locales, in extra-low to high quality. Multiple accents per language where they exist (16 for en-GB alone). |
 | Windows built-in | The old SAPI voice: robotic, but instant and needs no download. |
+| Cloned voices | Your own voices, built from a short clip with PocketTTS (English). See [Cloned voices](#cloned-voices). |
 | Speech recognition | Whisper (99 languages, tiny → large), Parakeet v3 (25 European languages, fast — the default), Dolphin (40 Asian languages), SenseVoice (zh/en/ja/ko/yue), Moonshine (fastest, per-language). |
 | Off | Either service can be switched off, freeing its memory and releasing its port. |
 
@@ -36,6 +37,30 @@ the same page.
 The catalog is generated from the [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) releases and
 embedded in the binary, so browsing works offline — only downloading needs the network. Refresh it
 with `go run ./tools/gen-catalog`.
+
+## Cloned voices
+
+**My Voices** on the Voices tab clones a voice from a short recording, so your agents can speak
+in a voice of your choosing. It uses [Kyutai PocketTTS](https://github.com/kyutai-labs/pocket-tts)
+through sherpa-onnx: one ~100 MB model, downloaded the first time a cloned voice is used, plus
+one clip per voice.
+
+- **Clip:** WAV or MP3, 3–30 seconds; 5–10 seconds of one person speaking, no music, is ideal.
+  Pauses in the clip carry into the output, so trim them. The clip is stored as a 16 kHz mono WAV
+  in `%APPDATA%\tts-sst\voices\<name>.wav` — copy the folder to back voices up or move machines.
+- **Selecting:** press **Use** on a voice. In `config.json` it is `"ttsVoice": "pocket:<name>"`.
+  Switching between cloned voices keeps the model loaded and only swaps the clip. The speaking
+  rate slider applies.
+- **Output:** 24 kHz, **English only**. On a 6-thread CPU a sentence synthesizes at about
+  1.9× real time (3.6 s of speech in 1.9 s), and the model adds roughly 530 MB of memory while
+  a cloned voice is active.
+- **Over Wyoming:** the active cloned voice is what port 10200 speaks with. While a clone is
+  active, `describe` lists every cloned voice as `pocket:<name>`, and a client that sends one of
+  those back as `voice.name` in `synthesize` gets that voice for the request — so each agent can
+  have its own voice without changing Settings.
+
+Only clone voices you have consent to use. The PocketTTS model files are published under
+CC-BY-4.0 and their author asks that they be used non-commercially; this app's own code is MIT.
 
 ## Settings
 
@@ -51,7 +76,8 @@ silence. Those are discarded instead of being passed on as if you had said them.
 **Running only one service.** Pick **Off** at the top of either list to shut that half down: its
 model is unloaded and its port released, immediately and without a restart. Speech recognition is
 the expensive half — switching it off drops the app from ~750 MB to ~80 MB, measured with Parakeet
-v3. Idle CPU is zero either way, so memory is the only thing running both actually costs.
+v3 and a Piper voice (a cloned voice keeps about 530 MB more loaded, see above). Idle CPU is zero
+either way, so memory is the only thing running both actually costs.
 
 Flags override config for one run: `-console` (no tray), `-mock` (protocol testing, no models),
 `-no-download`, `-bind`, `-stt-port`, `-tts-port`, `-threads`, `-models`.

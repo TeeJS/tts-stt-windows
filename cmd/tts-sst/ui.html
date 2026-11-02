@@ -70,6 +70,7 @@
   /* display:flex on the class outranks the browser's [hidden]{display:none} — without
      this the idle spinner showed before any enrollment had started. */
   .enroll-status[hidden] { display:none; }
+  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
   /* Busy banner: after first-run setup the models download for several minutes, and
      with only the small sidebar status the tabs looked like the services never got
      enabled. This puts the download/load progress at the top of every tab. */
@@ -118,6 +119,19 @@
       <h2>Voices (TTS)</h2>
       <p class="sub">The voice that reads replies aloud. Downloaded voices work offline, forever.</p>
       <div id="list-voices-toggle"></div>
+      <div class="group">My Voices</div>
+      <p class="sub">Clone a voice from a short clip (PocketTTS, English, downloads ~100 MB on first use). Clips are stored as portable WAVs in <code>%APPDATA%\tts-sst\voices</code>. Only clone voices you have consent to use.</p>
+      <div id="voiceList"></div>
+      <p class="sub">Best clips: 5–10 seconds, one speaker, no music, no long pauses — pauses in the clip carry into the output. WAV or MP3, 3–30 seconds.</p>
+      <div class="row">
+        <label for="voiceName" class="sr-only">Voice name</label>
+        <input type="text" id="voiceName" placeholder="Voice name" style="flex:0 1 300px;min-width:180px;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:9px 12px;font:inherit">
+        <label for="voiceFile" class="sr-only">Clip file</label>
+        <input type="file" id="voiceFile" accept=".wav,.mp3,audio/*" style="color:var(--dim);flex:1;min-width:0">
+        <button class="act primary" id="voiceBtn">Add voice</button>
+      </div>
+      <div id="voiceStatus" class="enroll-status" role="status" aria-live="polite" hidden><span class="spinner"></span><span id="voiceStatusText"></span></div>
+      <div class="group">Catalog voices</div>
       <div class="toolbar">
         <input type="search" id="q-voices" placeholder="Search voices…">
         <select id="lang-voices"></select>
@@ -343,8 +357,9 @@ function card(m) {
 }
 
 function renderList(kind, listEl, q, langSel) {
-  // The synthetic "Off" entries are represented by the Off/On rows above the list now.
-  const all = state.models.filter(m => m.kind === kind && m.family !== 'off');
+  // The synthetic "Off" entries are represented by the Off/On rows above the list now. The
+  // voice-cloning model isn't a voice either — it's picked indirectly through My Voices.
+  const all = state.models.filter(m => m.kind === kind && m.family !== 'off' && m.family !== 'pocket');
   langOptions(langSel, all, true);
   const term = q.value.trim().toLowerCase();
   const lang = langSel.value;
@@ -390,7 +405,8 @@ function serviceToggleCard(kind, on) {
   const activeId = kind === 'tts' ? state.activeTTS : state.activeSTT;
   const serviceOn = activeId !== 'off' && activeId !== '';
   const isThisRow = on === serviceOn;
-  const activeModel = state.models.find(m => m.kind === kind && m.active && m.family !== 'off');
+  const activeModel = state.models.find(m => m.kind === kind && m.active && m.family !== 'off')
+    || (kind === 'tts' && (state.voices || []).find(v => v.id === activeId) && {name: activeId.slice('pocket:'.length) + ' (cloned)'});
   const port = kind === 'tts' ? state.ports.tts : state.ports.stt;
   const what = kind === 'tts' ? 'text-to-speech' : 'speech-to-text';
 
@@ -423,6 +439,70 @@ function serviceToggleCard(kind, on) {
     el.querySelector('.actions').appendChild(use);
   }
   return el;
+}
+
+// Cloned voices: one card each, wired like a catalog voice card (Use → /api/select with the
+// "pocket:<name>" id) plus rename/delete, matching the enrolled-speakers list.
+function renderVoices() {
+  const list = $('#voiceList');
+  list.innerHTML = '';
+  if (!state.voices || !state.voices.length) {
+    list.innerHTML = '<div class="empty">No cloned voices yet — add a clip below.</div>';
+    return;
+  }
+  state.voices.forEach(v => {
+    const active = state.activeTTS === v.id;
+    const el = document.createElement('div');
+    el.className = 'card' + (active ? ' active' : '');
+    el.innerHTML = `<div class="info"><div class="title"><span class="name"></span>${active ? '<span class="badge on">Active</span>' : ''}</div><div class="meta"></div></div>
+      <div class="actions"></div>`;
+    el.querySelector('.name').textContent = v.name;
+    el.querySelector('.meta').textContent = [v.seconds ? v.seconds.toFixed(1) + ' s clip' : '', v.added_at ? 'added ' + v.added_at.slice(0,10) : '', 'English'].filter(Boolean).join(' · ');
+    const actions = el.querySelector('.actions');
+    if (!active) {
+      const use = document.createElement('button');
+      use.className = 'act primary';
+      use.textContent = 'Use';
+      use.setAttribute('aria-label', `Use voice ${v.name}`);
+      use.disabled = !!state.busy;
+      use.onclick = async () => { use.disabled = true; use.textContent = 'Starting…'; await post('/api/select', {id: v.id}); load(); };
+      actions.appendChild(use);
+      const ren = document.createElement('button');
+      ren.className = 'act';
+      ren.textContent = 'Rename';
+      ren.setAttribute('aria-label', `Rename voice ${v.name}`);
+      ren.onclick = async () => {
+        const to = prompt(`Rename ${v.name} to:`, v.name);
+        if (to && to !== v.name) {
+          const r = await fetch('/api/voice-action', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'rename', name:v.name, newName:to})});
+          if (!r.ok) voiceStatus(await r.text(), true); else load();
+        }
+      };
+      actions.appendChild(ren);
+      const del = document.createElement('button');
+      del.className = 'act link';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', `Delete voice ${v.name}`);
+      del.onclick = async () => {
+        if (confirm(`Delete the cloned voice ${v.name}?`)) {
+          const r = await fetch('/api/voice-action', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'delete', name:v.name})});
+          if (!r.ok) voiceStatus(await r.text(), true); else load();
+        }
+      };
+      actions.appendChild(del);
+    }
+    list.appendChild(el);
+  });
+}
+
+// voiceStatus shows a message in the My Voices status line (an aria-live region, so screen
+// readers hear it); errors stay until the next action, successes clear themselves.
+function voiceStatus(text, isError) {
+  const status = $('#voiceStatus');
+  status.querySelector('.spinner').hidden = true;
+  $('#voiceStatusText').textContent = (isError ? '⚠ ' : '✓ ') + text;
+  status.hidden = false;
+  if (!isError) setTimeout(() => { status.hidden = true; }, 3000);
 }
 
 function renderServiceToggles() {
@@ -525,6 +605,7 @@ function render() {
   ['voices','speech','settings','meetings'].forEach(t => $('#tab-'+t).hidden = t !== tab);
   renderServiceToggles();
   renderMeetings();
+  renderVoices();
 
   renderList('tts', $('#list-voices'), $('#q-voices'), $('#lang-voices'));
   renderList('stt', $('#list-speech'), $('#q-speech'), $('#lang-speech'));
@@ -563,7 +644,7 @@ function render() {
 function setupVoices() {
   const lang = $('#setupLang').value;
   const voices = state.models
-    .filter(m => m.kind === 'tts' && m.id !== 'windows-builtin' && m.langs.includes(lang))
+    .filter(m => m.kind === 'tts' && m.id !== 'windows-builtin' && m.family !== 'pocket' && m.langs.includes(lang))
     .sort((a, b) => (a.region || '').localeCompare(b.region || '') || a.name.localeCompare(b.name));
   const sel = $('#setupVoice');
   sel.innerHTML = voices.map(m => {
@@ -658,6 +739,31 @@ $('#enrollBtn').onclick = async () => {
     alert(e.message); status.hidden = true;
   } finally {
     btn.disabled = false; btn.textContent = 'Enroll';
+  }
+};
+$('#voiceBtn').onclick = async () => {
+  const name = $('#voiceName').value.trim();
+  const file = $('#voiceFile').files[0];
+  if (!name) { voiceStatus('Enter a name for the voice.', true); return; }
+  if (!file) { voiceStatus('Pick a clip of the speaker (WAV or MP3, 3–30 seconds).', true); return; }
+  const btn = $('#voiceBtn'), status = $('#voiceStatus');
+  btn.disabled = true; btn.textContent = 'Adding…';
+  status.querySelector('.spinner').hidden = false;
+  $('#voiceStatusText').textContent = `Checking ${name}'s clip…`;
+  status.hidden = false;
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('audio', file);
+  try {
+    const r = await fetch('/api/voices', {method:'POST', body: fd});
+    if (!r.ok) { voiceStatus(await r.text(), true); return; }
+    $('#voiceName').value = ''; $('#voiceFile').value = '';
+    voiceStatus(`Added ${name}. Press Use to speak with it — the model downloads on first use.`);
+    load();
+  } catch (e) {
+    voiceStatus(e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Add voice';
   }
 };
 $('#testBtn').onclick = async () => {

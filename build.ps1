@@ -20,11 +20,13 @@ $env:CGO_ENABLED = "1"
 if ($LASTEXITCODE -ne 0) { throw "go build failed" }
 
 # The sherpa-onnx runtime DLLs live in the Go module cache; copy the x86_64 set next to the exe.
+# Pick the version go.mod selects, not the lexically-last cache entry: a string sort would prefer
+# @v2.0.1 over @v1.13.8 (and @v1.13.8 over @v1.13.10) if those ever land in the cache.
 $modCache = (& go env GOMODCACHE).Trim()
-$libDir = Get-ChildItem -Path (Join-Path $modCache "github.com\k2-fsa\sherpa-onnx-go-windows@*") -Directory |
-    Sort-Object Name | Select-Object -Last 1 |
-    ForEach-Object { Join-Path $_.FullName "lib\x86_64-pc-windows-gnu" }
-if (-not (Test-Path $libDir)) { throw "sherpa-onnx DLLs not found — run 'go mod download' first" }
+$sherpaVer = (& go list -m -f '{{.Version}}' github.com/k2-fsa/sherpa-onnx-go-windows).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $sherpaVer) { throw "could not resolve sherpa-onnx-go-windows version from go.mod" }
+$libDir = Join-Path $modCache "github.com\k2-fsa\sherpa-onnx-go-windows@$sherpaVer\lib\x86_64-pc-windows-gnu"
+if (-not (Test-Path $libDir)) { throw "sherpa-onnx DLLs not found at $libDir — run 'go mod download' first" }
 Copy-Item (Join-Path $libDir "*.dll") $dist
 Write-Host "Copied runtime DLLs from $libDir"
 

@@ -153,7 +153,7 @@ func mockSTT(pcm []byte, f wyoming.AudioFormat, _ string) (string, error) {
 	return fmt.Sprintf("mock transcript of %d bytes", len(pcm)), nil
 }
 
-func mockTTS(string) ([]byte, wyoming.AudioFormat, error) {
+func mockTTS(string, string) ([]byte, wyoming.AudioFormat, error) {
 	const rate = 22050
 	n := rate * 4 / 10 // 0.4s of 440Hz tone
 	pcm := make([]byte, n*2)

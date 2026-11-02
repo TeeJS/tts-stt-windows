@@ -12,11 +12,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/TeeJS/tts-stt-windows/internal/config"
 	"github.com/TeeJS/tts-stt-windows/internal/diarize"
 	"github.com/TeeJS/tts-stt-windows/internal/models"
+	"github.com/TeeJS/tts-stt-windows/internal/voices"
 )
 
 //go:embed ui.html
@@ -51,6 +53,8 @@ func startUI(svc *service) (*uiServer, error) {
 	mux.HandleFunc("/api/meetings", u.guard(u.handleMeetings))
 	mux.HandleFunc("/api/speaker-action", u.guard(u.handleSpeakerAction))
 	mux.HandleFunc("/api/enroll", u.guard(u.handleUIEnroll))
+	mux.HandleFunc("/api/voices", u.guard(u.handleVoices))
+	mux.HandleFunc("/api/voice-action", u.guard(u.handleVoiceAction))
 	go func() {
 		if err := http.Serve(l, mux); err != nil {
 			log.Printf("settings UI stopped: %v", err)
@@ -151,6 +155,12 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 			speakers = d
 		}
 	}
+	clones := []voices.Detail{}
+	if store, err := voices.NewStore(voicesDir()); err == nil {
+		if d, err := store.ListDetails(); err == nil && d != nil {
+			clones = d
+		}
+	}
 	writeJSON(w, map[string]any{
 		"status":          svc.Status(),
 		"busy":            svc.Busy(),
@@ -170,7 +180,102 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 		"bind":            svc.cfg.Bind,
 		"diarThreshold":   svc.cfg.DiarThreshold,
 		"speakers":        speakers,
+		"voices":          clones,
 	})
+}
+
+// maxVoiceUpload caps a reference-clip upload before it is decoded: 30 s of 48 kHz stereo
+// PCM16 is ~6 MB, so 16 MB leaves room for sloppy WAV headers without letting a 200 MB
+// file through the decoder.
+const maxVoiceUpload = 16 << 20
+
+// handleVoices adds a cloned voice: a name and a short clip of the speaker, normalized to
+// 16 kHz mono WAV in voicesDir(). The pocket-tts model itself downloads on first use.
+func (u *uiServer) handleVoices(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxVoiceUpload)
+	if err := r.ParseMultipartForm(maxVoiceUpload); err != nil {
+		http.Error(w, fmt.Sprintf("clip must be under %d MB (a 5–10 second WAV or MP3 is plenty)", maxVoiceUpload>>20), http.StatusRequestEntityTooLarge)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		http.Error(w, "voice name is required", http.StatusBadRequest)
+		return
+	}
+	f, _, err := r.FormFile("audio")
+	if err != nil {
+		http.Error(w, "clip file is required", http.StatusBadRequest)
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	samples, err := diarize.DecodeAudio(data)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	store, err := voices.NewStore(voicesDir())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := store.Save(name, samples); err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, voices.ErrExists) {
+			code = http.StatusConflict
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "id": voices.ID(name)})
+}
+
+// handleVoiceAction renames or deletes a cloned voice. The active voice is left alone: its
+// clip is what the server is speaking with, so the user switches voices first.
+func (u *uiServer) handleVoiceAction(w http.ResponseWriter, r *http.Request) {
+	var body struct{ Action, Name, NewName string }
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	// Held across the check and the file change so a switch can't activate this clip in between.
+	u.svc.switchMu.Lock()
+	defer u.svc.switchMu.Unlock()
+	// Case-insensitive like the file names: "pocket:Bob" active must also protect "bob".
+	if active, ok := voices.Name(u.svc.ActiveTTS()); ok && strings.EqualFold(strings.TrimSpace(active), strings.TrimSpace(body.Name)) {
+		http.Error(w, "this voice is in use — switch to another voice first", http.StatusConflict)
+		return
+	}
+	store, err := voices.NewStore(voicesDir())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	switch body.Action {
+	case "rename":
+		err = store.Rename(body.Name, strings.TrimSpace(body.NewName))
+	case "delete":
+		err = store.Delete(body.Name)
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		code := http.StatusBadRequest
+		switch {
+		case errors.Is(err, voices.ErrNotFound):
+			code = http.StatusNotFound
+		case errors.Is(err, voices.ErrExists):
+			code = http.StatusConflict
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 // enrollmentsDir is where voice profiles live — one portable .npy per speaker;
@@ -295,6 +400,13 @@ func (u *uiServer) handleSelect(w http.ResponseWriter, r *http.Request) {
 		id, kind = offID, models.STT
 	case onTTSID, onSTTID, sapiVoiceID:
 	default:
+		if name, ok := voices.Name(body.ID); ok {
+			if store, err := voices.NewStore(voicesDir()); err != nil || !store.Exists(name) {
+				http.Error(w, "unknown voice", http.StatusNotFound)
+				return
+			}
+			break
+		}
 		m, ok := models.ByID(body.ID)
 		if !ok {
 			http.Error(w, "unknown model", http.StatusNotFound)
@@ -331,6 +443,10 @@ func (u *uiServer) handleRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.ID == u.svc.ActiveTTS() || body.ID == u.svc.ActiveSTT() {
 		http.Error(w, "that model is in use — pick another one first", http.StatusConflict)
+		return
+	}
+	if _, cloned := voices.Name(u.svc.ActiveTTS()); cloned && body.ID == pocketModelID {
+		http.Error(w, "a cloned voice is using this model — pick another voice first", http.StatusConflict)
 		return
 	}
 	m, ok := models.ByID(body.ID)
@@ -402,7 +518,7 @@ func (u *uiServer) handleTest(w http.ResponseWriter, r *http.Request) {
 	if body.Text == "" {
 		body.Text = "This is how I sound."
 	}
-	pcm, format, err := u.svc.synthesize(body.Text)
+	pcm, format, err := u.svc.synthesize(body.Text, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
