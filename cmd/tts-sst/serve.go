@@ -55,6 +55,7 @@ type service struct {
 	noDownload bool
 
 	mu       sync.RWMutex
+	switchMu sync.Mutex // serializes whole TTS switches: a clone swap reads the live engine, then reinstalls it
 	stt      *engine.Recognizer
 	tts      engine.TTS // *engine.PiperTTS or *engine.SapiTTS
 	sttID    string
@@ -377,6 +378,8 @@ func (s *service) useTTS(id string) error {
 	if id == "" {
 		return fmt.Errorf("no voice chosen")
 	}
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
 	if isOff(id) {
 		s.mu.Lock()
 		old := s.tts

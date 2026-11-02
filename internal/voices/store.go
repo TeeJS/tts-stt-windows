@@ -109,13 +109,12 @@ func (s *Store) Save(name string, samples []float32) error {
 	if secs > MaxSeconds {
 		return fmt.Errorf("%w: %.1fs (at most %.0fs)", ErrTooLong, secs, MaxSeconds)
 	}
-	// Windows file names are case-insensitive, so "Bob" and "bob" are the same clip; refuse
-	// rather than silently overwrite a different voice.
-	if existing, _ := s.List(); true {
-		for _, n := range existing {
-			if strings.EqualFold(n, strings.TrimSpace(name)) && n != strings.TrimSpace(name) {
-				return fmt.Errorf("%w: %q (as %q)", ErrExists, name, n)
-			}
+	// Never overwrite: an upload under a taken name is a mistake, not a replacement. Compared
+	// case-insensitively because Windows file names are, so "Bob" and "bob" are one clip.
+	existing, _ := s.List()
+	for _, n := range existing {
+		if strings.EqualFold(n, strings.TrimSpace(name)) {
+			return fmt.Errorf("%w: %q", ErrExists, n)
 		}
 	}
 	tmp := p + ".tmp"
