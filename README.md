@@ -28,6 +28,7 @@ Open **Settings** from the tray to browse everything, filtered by language and s
 | Voices | 178 Piper + 25 Coqui voices across 47 locales, in extra-low to high quality. Multiple accents per language where they exist (16 for en-GB alone). |
 | Windows built-in | The old SAPI voice: robotic, but instant and needs no download. |
 | Cloned voices | Your own voices, built from a short clip with PocketTTS (English). See [Cloned voices](#cloned-voices). |
+| Local Piper voices | Piper voices you trained yourself, dropped into a folder. See [Local Piper voices](#local-piper-voices). |
 | Speech recognition | Whisper (99 languages, tiny → large), Parakeet v3 (25 European languages, fast — the default), Dolphin (40 Asian languages), SenseVoice (zh/en/ja/ko/yue), Moonshine (fastest, per-language). |
 | Off | Either service can be switched off, freeing its memory and releasing its port. |
 
@@ -68,6 +69,22 @@ one clip per voice.
 
 Only clone voices you have consent to use. The PocketTTS model files are published under
 CC-BY-4.0 and their author asks that they be used non-commercially; this app's own code is MIT.
+
+## Local Piper voices
+
+A [Piper](https://github.com/rhasspy/piper) voice that isn't in the catalog — one you trained
+yourself, or downloaded from elsewhere — works without any conversion:
+
+1. Make the folder `%APPDATA%\tts-sst\piper\<name>\`.
+2. Put the standard Piper export in it: `<name>.onnx` and `<name>.onnx.json`.
+3. It appears under **Local voices** on the Voices tab; press **Use**. In `config.json` it is
+   `"ttsVoice": "local:<name>"`, and over Wyoming it is advertised and requested as `local:<name>`.
+
+On first use the app writes the `tokens.txt` sherpa-onnx needs from the json's `phoneme_id_map`
+and links (or copies) `espeak-ng-data` from a downloaded catalog Piper voice — the language default
+is downloaded if none is installed yet. Both are left alone afterwards, so a hand-edited
+`tokens.txt` survives. Remove a voice by deleting its folder; there is nothing to delete from the
+settings page. Local voices count as standard voices for **Keep both voice engines loaded**.
 
 ## Settings
 

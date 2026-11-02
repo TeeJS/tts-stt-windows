@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/TeeJS/tts-stt-windows/internal/config"
 	"github.com/TeeJS/tts-stt-windows/internal/diarize"
 	"github.com/TeeJS/tts-stt-windows/internal/engine"
+	"github.com/TeeJS/tts-stt-windows/internal/localvoices"
 	"github.com/TeeJS/tts-stt-windows/internal/models"
 	"github.com/TeeJS/tts-stt-windows/internal/voices"
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
@@ -27,6 +29,9 @@ const pocketModelID = "pocket-tts"
 // voicesDir holds the reference clips cloned voices are built from — one WAV per voice; copy
 // the folder to back them up or move machines.
 func voicesDir() string { return filepath.Join(config.Dir(), "voices") }
+
+// localVoicesDir holds user-supplied Piper voices, one folder each (see internal/localvoices).
+func localVoicesDir() string { return filepath.Join(config.Dir(), "piper") }
 
 // offID marks a service the user has switched off. Stored in the same config field as a model id
 // (like sapiVoiceID) rather than as a separate flag, so "which model, if any" stays one value.
@@ -62,8 +67,8 @@ type service struct {
 	ttsID    string
 	// alt is the other kind of voice engine, loaded only while cfg.MixVoices is on: a standard
 	// voice when a clone is active and vice versa, so a request can name either (see synthesize).
-	alt   engine.TTS
-	altID string
+	alt      engine.TTS
+	altID    string
 	status   string
 	busy     string // non-empty while a download/load is in flight, for the UI
 	onChange func() // tray/UI refresh hook
@@ -152,6 +157,12 @@ func label(id string) string {
 	if name, ok := voices.Name(id); ok {
 		return name + " (cloned)"
 	}
+	if name, ok := localvoices.Name(id); ok {
+		if v, ok := localvoices.Get(localVoicesDir(), name); ok {
+			return v.Label
+		}
+		return name
+	}
 	if m, ok := models.ByID(id); ok {
 		if m.Region != "" {
 			return m.Name + " (" + m.Region + ")"
@@ -173,9 +184,11 @@ func (s *service) info() wyoming.Info {
 	s.mu.RUnlock()
 	ttsVoices := []string{advertised(active)}
 	// Advertise by the name a client must send back as voice.name: clones by their pocket:<name>
-	// id (every clone, while any loaded engine is PocketTTS), the second engine's standard voice
-	// by its catalog id.
+	// id (every clone, while any loaded engine is PocketTTS), local voices by their local:<name>
+	// id (their label is not unique), the second engine's standard voice by its catalog id.
 	if _, cloned := voices.Name(active); cloned {
+		ttsVoices[0] = active
+	} else if _, local := localvoices.Name(active); local {
 		ttsVoices[0] = active
 	}
 	if pocketLoaded {
@@ -259,6 +272,13 @@ func (s *service) resolve(id string, kind models.Kind, fallback string) string {
 			return id
 		}
 		log.Printf("configured cloned voice %q has no clip in %s; falling back to %q", name, voicesDir(), fallback)
+		return fallback
+	}
+	if name, ok := localvoices.Name(id); ok && kind == models.TTS {
+		if localvoices.Exists(localVoicesDir(), name) {
+			return id
+		}
+		log.Printf("configured local voice %q has no %s.onnx + %s.onnx.json in %s; falling back to %q", name, name, name, localVoicesDir(), fallback)
 		return fallback
 	}
 	if m, ok := models.ByID(id); ok && m.Kind == kind {
@@ -504,17 +524,22 @@ func (s *service) useTTS(id string) error {
 }
 
 // sameKind reports whether two voice ids use the same engine family: both clones (one
-// PocketTTS engine serves every clip) or both standard voices with the same id.
+// PocketTTS engine serves every clip) or both standard voices with the same id. Local Piper
+// voices are standard voices here — each gets its own engine, like a catalog voice.
 func sameKind(a, b string) bool {
 	_, ca := voices.Name(a)
 	_, cb := voices.Name(b)
 	return ca && cb
 }
 
-// buildStandard loads a catalog (Piper/Coqui) voice or the Windows built-in one.
+// buildStandard loads a catalog (Piper/Coqui) voice, a local Piper voice, or the Windows
+// built-in one.
 func (s *service) buildStandard(id string) (engine.TTS, error) {
 	if id == sapiVoiceID {
 		return engine.NewSapiTTS(), nil
+	}
+	if name, ok := localvoices.Name(id); ok {
+		return s.buildLocal(name)
 	}
 	m, ok := models.ByID(id)
 	if !ok || m.Kind != models.TTS || m.ID == pocketModelID {
@@ -531,6 +556,65 @@ func (s *service) buildStandard(id string) (engine.TTS, error) {
 	}
 	v.SetSpeed(s.cfg.Speed)
 	return v, nil
+}
+
+// buildLocal loads a user-supplied Piper voice from localVoicesDir(). The folder only has the
+// Piper export; localvoices.Prepare adds the tokens.txt and borrows espeak-ng-data from an
+// installed catalog Piper voice, downloading the language default if none is installed yet.
+func (s *service) buildLocal(name string) (engine.TTS, error) {
+	v, ok := localvoices.Get(localVoicesDir(), name)
+	if !ok {
+		return nil, fmt.Errorf("local voice %q: %s.onnx and %s.onnx.json not found in %s", name, name, name, filepath.Join(localVoicesDir(), name))
+	}
+	espeak, err := s.espeakDataDir()
+	if err != nil {
+		return nil, fmt.Errorf("local voice %q: %w", name, err)
+	}
+	dir, err := localvoices.Prepare(localVoicesDir(), name, espeak)
+	if err != nil {
+		return nil, err
+	}
+	s.setBusy("Loading " + v.Label + "…")
+	defer s.setBusy("")
+	eng, err := engine.NewPiperTTS(dir, s.threads)
+	if err != nil {
+		return nil, err
+	}
+	eng.SetSpeed(s.cfg.Speed)
+	return eng, nil
+}
+
+// espeakDataDir finds an espeak-ng-data folder for local Piper voices: from any installed
+// catalog Piper voice, else by installing the user's language default (or the English one when
+// that language has no Piper voice). Every Piper archive ships the same full espeak data set.
+func (s *service) espeakDataDir() (string, error) {
+	for _, id := range models.InstalledIDs(s.modelsDir) {
+		if m, ok := models.ByID(id); ok && m.Kind == models.TTS && m.Family == "piper" {
+			if d := filepath.Join(s.modelsDir, m.Dir, "espeak-ng-data"); isDir(d) {
+				return d, nil
+			}
+		}
+	}
+	def, _ := models.DefaultsFor(s.cfg.Language)
+	if def.Family != "piper" {
+		def, _ = models.DefaultsFor("en")
+	}
+	if def.ID == "" || def.Family != "piper" {
+		return "", fmt.Errorf("no catalog Piper voice to borrow espeak-ng-data from")
+	}
+	if err := s.ensure(def); err != nil {
+		return "", fmt.Errorf("espeak-ng-data (from %s): %w", def.Name, err)
+	}
+	d := filepath.Join(s.modelsDir, def.Dir, "espeak-ng-data")
+	if !isDir(d) {
+		return "", fmt.Errorf("%s has no espeak-ng-data", def.Name)
+	}
+	return d, nil
+}
+
+func isDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 // syncAlt brings the second engine into line with cfg.MixVoices: loaded with the other kind
