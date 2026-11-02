@@ -54,10 +54,17 @@ one clip per voice.
 - **Output:** 24 kHz, **English only**. On a 6-thread CPU a sentence synthesizes at about
   1.9× real time (3.6 s of speech in 1.9 s), and the model adds roughly 530 MB of memory while
   a cloned voice is active.
-- **Over Wyoming:** the active cloned voice is what port 10200 speaks with. While a clone is
-  active, `describe` lists every cloned voice as `pocket:<name>`, and a client that sends one of
-  those back as `voice.name` in `synthesize` gets that voice for the request — so each agent can
+- **Over Wyoming:** the active voice is what port 10200 speaks with by default. `describe` lists
+  every voice a loaded engine can speak — all clones as `pocket:<name>` while PocketTTS is loaded,
+  plus the standard voice in the second engine by its catalog id — and a client that sends one of
+  those back as `voice.name` in `synthesize` gets that voice for the request. So each agent can
   have its own voice without changing Settings.
+- **Mixing cloned and standard voices:** by default only the selected voice's engine is loaded,
+  so apps can pick among clones *or* among standard voices, not both. Turn on **Keep both voice
+  engines loaded** (General tab) and the app also loads the last-used voice of the other kind —
+  Cori alongside a clone, or a clone alongside Cori — so one app can use a cloned voice while
+  another uses a standard one. Costs the second engine's memory: about 80 MB for a Piper voice,
+  about 530 MB for the cloning model.
 
 Only clone voices you have consent to use. The PocketTTS model files are published under
 CC-BY-4.0 and their author asks that they be used non-commercially; this app's own code is MIT.

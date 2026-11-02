@@ -57,9 +57,13 @@ type service struct {
 	mu       sync.RWMutex
 	switchMu sync.Mutex // serializes whole TTS switches: a clone swap reads the live engine, then reinstalls it
 	stt      *engine.Recognizer
-	tts      engine.TTS // *engine.PiperTTS or *engine.SapiTTS
+	tts      engine.TTS // the active voice: *engine.PiperTTS, *engine.PocketTTS or *engine.SapiTTS
 	sttID    string
 	ttsID    string
+	// alt is the other kind of voice engine, loaded only while cfg.MixVoices is on: a standard
+	// voice when a clone is active and vice versa, so a request can name either (see synthesize).
+	alt   engine.TTS
+	altID string
 	status   string
 	busy     string // non-empty while a download/load is in flight, for the UI
 	onChange func() // tray/UI refresh hook
@@ -98,6 +102,9 @@ func (s *service) Busy() string      { s.mu.RLock(); defer s.mu.RUnlock(); retur
 func (s *service) ActiveSTT() string { s.mu.RLock(); defer s.mu.RUnlock(); return s.sttID }
 func (s *service) ActiveTTS() string { s.mu.RLock(); defer s.mu.RUnlock(); return s.ttsID }
 
+// AltTTS is the voice held by the second engine while mixing is on, or "".
+func (s *service) AltTTS() string { s.mu.RLock(); defer s.mu.RUnlock(); return s.altID }
+
 func (s *service) setBusy(what string) {
 	s.mu.Lock()
 	s.busy = what
@@ -115,6 +122,9 @@ func (s *service) running() {
 		return
 	}
 	line := fmt.Sprintf("Running — %s · %s", label(stt), label(tts))
+	if alt := s.AltTTS(); alt != "" {
+		line += " + " + label(alt)
+	}
 	if s.meetingsOn() {
 		// Report what is true: the port-busy failure used to be overwritten by
 		// this line claiming meetings was being served.
@@ -154,13 +164,21 @@ func label(id string) string {
 // info answers a `describe` with what is true right now — which services are actually running and
 // which model each is using.
 func (s *service) info() wyoming.Info {
-	active := s.ActiveTTS()
+	s.mu.RLock()
+	active, alt, altID := s.ttsID, s.alt, s.altID
+	_, pocketLoaded := s.tts.(*engine.PocketTTS)
+	if _, ok := alt.(*engine.PocketTTS); ok {
+		pocketLoaded = true
+	}
+	s.mu.RUnlock()
 	ttsVoices := []string{advertised(active)}
-	// Every cloned voice is selectable per request while a clone is active (see synthesize), so
-	// advertise them by id — the active one too — because a client sends the advertised name
-	// back as voice.name.
+	// Advertise by the name a client must send back as voice.name: clones by their pocket:<name>
+	// id (every clone, while any loaded engine is PocketTTS), the second engine's standard voice
+	// by its catalog id.
 	if _, cloned := voices.Name(active); cloned {
 		ttsVoices[0] = active
+	}
+	if pocketLoaded {
 		if store, err := voices.NewStore(voicesDir()); err == nil {
 			if names, err := store.List(); err == nil {
 				for _, n := range names {
@@ -170,6 +188,9 @@ func (s *service) info() wyoming.Info {
 				}
 			}
 		}
+	}
+	if _, cloned := voices.Name(altID); alt != nil && !cloned {
+		ttsVoices = append(ttsVoices, altID)
 	}
 	return wyoming.BuildInfo(advertised(s.ActiveSTT()), ttsVoices...)
 }
@@ -318,7 +339,7 @@ func (s *service) transcribe(pcm []byte, f wyoming.AudioFormat, _ string) (strin
 
 func (s *service) synthesize(text, requested string) ([]byte, wyoming.AudioFormat, error) {
 	s.mu.RLock()
-	voice, activeID := s.tts, s.ttsID
+	voice, activeID, alt, altID := s.tts, s.ttsID, s.alt, s.altID
 	s.mu.RUnlock()
 	if voice == nil {
 		return nil, wyoming.AudioFormat{}, fmt.Errorf("no voice loaded")
@@ -329,19 +350,28 @@ func (s *service) synthesize(text, requested string) ([]byte, wyoming.AudioForma
 		rate int
 		err  error
 	)
-	// A client may name one of the cloned voices `describe` advertised. Honored when a PocketTTS
-	// engine is live (a clone is the active voice): the clip is swapped for this request only,
-	// so agents can each speak in their own voice without touching Settings. Any other name —
-	// a catalog voice, an unknown clone, or when Piper/SAPI is active — falls back to the
-	// active voice, which is what every client got before per-request voices existed.
-	if name, ok := voices.Name(requested); ok && requested != activeID {
-		if p, live := voice.(*engine.PocketTTS); live {
-			if store, serr := voices.NewStore(voicesDir()); serr == nil {
-				if ref, refRate, lerr := store.Load(name); lerr == nil {
-					pcm, rate, err = p.SynthesizeWith(text, ref, refRate)
-					goto done
+	// A client may name any voice `describe` advertised. A clone is served by whichever loaded
+	// engine is PocketTTS (the clip is swapped for this request only); the standard voice in the
+	// second engine is served by that engine. Anything else — an unknown name, or a kind of
+	// voice no loaded engine can speak — falls back to the active voice, which is what every
+	// client got before per-request voices existed.
+	if requested != "" && requested != activeID && requested != label(activeID) {
+		if name, ok := voices.Name(requested); ok {
+			p, _ := voice.(*engine.PocketTTS)
+			if p == nil {
+				p, _ = alt.(*engine.PocketTTS)
+			}
+			if p != nil {
+				if store, serr := voices.NewStore(voicesDir()); serr == nil {
+					if ref, refRate, lerr := store.Load(name); lerr == nil {
+						pcm, rate, err = p.SynthesizeWith(text, ref, refRate)
+						goto done
+					}
 				}
 			}
+		} else if alt != nil && (requested == altID || requested == label(altID)) {
+			pcm, rate, err = alt.Synthesize(text)
+			goto done
 		}
 		log.Printf("tts: requested voice %q unavailable, using %s", requested, label(activeID))
 	}
@@ -421,36 +451,45 @@ func (s *service) useTTS(id string) error {
 	defer s.switchMu.Unlock()
 	if isOff(id) {
 		s.mu.Lock()
-		old := s.tts
-		s.tts, s.ttsID = nil, offID
+		old, oldAlt := s.tts, s.alt
+		s.tts, s.ttsID, s.alt, s.altID = nil, offID, nil, ""
 		s.mu.Unlock()
 		closeAsync(old)
+		closeAsync(oldAlt)
 		return nil
 	}
+	s.mu.RLock()
+	cur, curID, alt, altID := s.tts, s.ttsID, s.alt, s.altID
+	s.mu.RUnlock()
 	var voice engine.TTS
-	if id == sapiVoiceID {
-		voice = engine.NewSapiTTS()
-	} else if name, ok := voices.Name(id); ok {
-		v, err := s.usePocketVoice(name)
+	if alt != nil && (id == altID || sameKind(id, altID)) {
+		// The requested voice lives in the other engine (or is a clone and the other engine is
+		// PocketTTS): promote that engine instead of loading a second copy. The one being
+		// demoted becomes alt, or is closed by syncAlt if mixing is off.
+		voice = alt
+		if name, ok := voices.Name(id); ok {
+			if _, err := s.usePocketVoice(name, voice.(*engine.PocketTTS)); err != nil {
+				return err
+			}
+		}
+		s.mu.Lock()
+		s.tts, s.ttsID, s.alt, s.altID = voice, id, cur, curID
+		s.mu.Unlock()
+		s.syncAlt()
+		return nil
+	}
+	if name, ok := voices.Name(id); ok {
+		live, _ := cur.(*engine.PocketTTS)
+		v, err := s.usePocketVoice(name, live)
 		if err != nil {
 			return err
 		}
 		voice = v
 	} else {
-		m, ok := models.ByID(id)
-		if !ok || m.Kind != models.TTS {
-			return fmt.Errorf("unknown voice %q", id)
-		}
-		if err := s.ensure(m); err != nil {
-			return err
-		}
-		s.setBusy("Loading " + m.Name + "…")
-		defer s.setBusy("")
-		v, err := engine.NewPiperTTS(filepath.Join(s.modelsDir, m.Dir), s.threads)
+		v, err := s.buildStandard(id)
 		if err != nil {
 			return err
 		}
-		v.SetSpeed(s.cfg.Speed)
 		voice = v
 	}
 	s.mu.Lock()
@@ -460,13 +499,111 @@ func (s *service) useTTS(id string) error {
 	if old != voice { // switching between two cloned voices keeps the same PocketTTS engine
 		closeAsync(old)
 	}
+	s.syncAlt()
 	return nil
 }
 
-// usePocketVoice activates a cloned voice: the shared pocket-tts model (downloaded on first use)
-// plus the named reference clip from voicesDir(). When a PocketTTS engine is already live only
-// the clip changes, which is near-instant — the model stays loaded.
-func (s *service) usePocketVoice(name string) (engine.TTS, error) {
+// sameKind reports whether two voice ids use the same engine family: both clones (one
+// PocketTTS engine serves every clip) or both standard voices with the same id.
+func sameKind(a, b string) bool {
+	_, ca := voices.Name(a)
+	_, cb := voices.Name(b)
+	return ca && cb
+}
+
+// buildStandard loads a catalog (Piper/Coqui) voice or the Windows built-in one.
+func (s *service) buildStandard(id string) (engine.TTS, error) {
+	if id == sapiVoiceID {
+		return engine.NewSapiTTS(), nil
+	}
+	m, ok := models.ByID(id)
+	if !ok || m.Kind != models.TTS || m.ID == pocketModelID {
+		return nil, fmt.Errorf("unknown voice %q", id)
+	}
+	if err := s.ensure(m); err != nil {
+		return nil, err
+	}
+	s.setBusy("Loading " + m.Name + "…")
+	defer s.setBusy("")
+	v, err := engine.NewPiperTTS(filepath.Join(s.modelsDir, m.Dir), s.threads)
+	if err != nil {
+		return nil, err
+	}
+	v.SetSpeed(s.cfg.Speed)
+	return v, nil
+}
+
+// syncAlt brings the second engine into line with cfg.MixVoices: loaded with the other kind
+// of voice while mixing is on, closed otherwise. Called with switchMu held, after every switch
+// and when the setting changes. A failure to load the second engine is logged, never fatal —
+// the active voice keeps working.
+func (s *service) syncAlt() {
+	s.mu.RLock()
+	active, alt, altID := s.ttsID, s.alt, s.altID
+	s.mu.RUnlock()
+	want := ""
+	if s.cfg.MixVoices && !isOff(active) && active != "" {
+		want = s.otherVoice(active)
+	}
+	if want == altID && (want == "" || alt != nil) {
+		return
+	}
+	var eng engine.TTS
+	if want != "" {
+		var err error
+		if name, ok := voices.Name(want); ok {
+			eng, err = s.usePocketVoice(name, nil)
+		} else {
+			eng, err = s.buildStandard(want)
+		}
+		if err != nil {
+			log.Printf("mixed voices: could not load %s alongside %s: %v", label(want), label(active), err)
+			want = ""
+		}
+	}
+	s.mu.Lock()
+	old := s.alt
+	s.alt, s.altID = eng, want
+	s.mu.Unlock()
+	closeAsync(old)
+	if want != "" {
+		log.Printf("mixed voices: %s loaded alongside %s", label(want), label(active))
+	}
+}
+
+// otherVoice picks what the second engine should hold given the active voice: the remembered
+// standard voice (or the language default) when a clone is active; the remembered clone (or
+// the first one in voices\) when a standard voice is active. "" when there is nothing to pair.
+func (s *service) otherVoice(active string) string {
+	store, err := voices.NewStore(voicesDir())
+	if err != nil {
+		return ""
+	}
+	if _, cloned := voices.Name(active); cloned {
+		def, _ := models.DefaultsFor(s.cfg.Language)
+		fallback := def.ID
+		if fallback == "" {
+			fallback = sapiVoiceID
+		}
+		id := s.resolve(s.cfg.StandardVoice, models.TTS, fallback)
+		if _, c := voices.Name(id); c || isOff(id) || id == "" {
+			return fallback
+		}
+		return id
+	}
+	if name, ok := voices.Name(s.cfg.CloneVoice); ok && store.Exists(name) {
+		return s.cfg.CloneVoice
+	}
+	if names, err := store.List(); err == nil && len(names) > 0 {
+		return voices.ID(names[0])
+	}
+	return ""
+}
+
+// usePocketVoice prepares a cloned voice: the shared pocket-tts model (downloaded on first use)
+// plus the named reference clip from voicesDir(). Given an already-loaded PocketTTS engine only
+// the clip changes, which is near-instant — the model stays loaded; nil loads a fresh engine.
+func (s *service) usePocketVoice(name string, live *engine.PocketTTS) (engine.TTS, error) {
 	store, err := voices.NewStore(voicesDir())
 	if err != nil {
 		return nil, err
@@ -475,9 +612,6 @@ func (s *service) usePocketVoice(name string) (engine.TTS, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cloned voice %q: %w", name, err)
 	}
-	s.mu.RLock()
-	live, _ := s.tts.(*engine.PocketTTS)
-	s.mu.RUnlock()
 	if live == nil {
 		m, ok := models.ByID(pocketModelID)
 		if !ok {
@@ -528,6 +662,12 @@ func (s *service) SwitchTTS(id string) error {
 		s.cfg.PrevTTSVoice = s.cfg.TTSVoice
 	}
 	s.cfg.TTSVoice = id
+	// Remember the last voice of each kind: that is what the second engine loads when mixing.
+	if _, cloned := voices.Name(id); cloned {
+		s.cfg.CloneVoice = id
+	} else if !isOff(id) && id != "" {
+		s.cfg.StandardVoice = id
+	}
 	config.Save(s.cfg)
 	s.syncListeners()
 	s.running()
@@ -563,11 +703,25 @@ func (s *service) SetSpeed(speed float32) {
 	s.cfg.Speed = speed
 	config.Save(s.cfg)
 	s.mu.RLock()
-	v, ok := s.tts.(speedSetter)
+	engines := []engine.TTS{s.tts, s.alt}
 	s.mu.RUnlock()
-	if ok {
-		v.SetSpeed(speed)
+	for _, e := range engines {
+		if v, ok := e.(speedSetter); ok && e != nil {
+			v.SetSpeed(speed)
+		}
 	}
+}
+
+// SetMixVoices turns the second voice engine on or off (see Config.MixVoices).
+func (s *service) SetMixVoices(on bool) {
+	s.cfg.MixVoices = on
+	config.Save(s.cfg)
+	go func() {
+		s.switchMu.Lock()
+		defer s.switchMu.Unlock()
+		s.syncAlt()
+		s.running()
+	}()
 }
 
 // speedSetter is implemented by the engines with a speaking-rate control (Piper, PocketTTS);

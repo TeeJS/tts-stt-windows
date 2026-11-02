@@ -171,6 +171,8 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 		"speed":           svc.cfg.Speed,
 		"setup":           svc.cfg.Setup,
 		"filterNonSpeech": svc.cfg.FilterNonSpeech,
+		"mixVoices":       svc.cfg.MixVoices,
+		"altTTS":          svc.AltTTS(),
 		"activeTTS":       svc.ActiveTTS(),
 		"activeSTT":       svc.ActiveSTT(),
 		"languages":       models.Languages(),
@@ -246,9 +248,11 @@ func (u *uiServer) handleVoiceAction(w http.ResponseWriter, r *http.Request) {
 	u.svc.switchMu.Lock()
 	defer u.svc.switchMu.Unlock()
 	// Case-insensitive like the file names: "pocket:Bob" active must also protect "bob".
-	if active, ok := voices.Name(u.svc.ActiveTTS()); ok && strings.EqualFold(strings.TrimSpace(active), strings.TrimSpace(body.Name)) {
-		http.Error(w, "this voice is in use — switch to another voice first", http.StatusConflict)
-		return
+	for _, id := range []string{u.svc.ActiveTTS(), u.svc.AltTTS()} {
+		if inUse, ok := voices.Name(id); ok && strings.EqualFold(strings.TrimSpace(inUse), strings.TrimSpace(body.Name)) {
+			http.Error(w, "this voice is in use — switch to another voice first", http.StatusConflict)
+			return
+		}
 	}
 	store, err := voices.NewStore(voicesDir())
 	if err != nil {
@@ -445,7 +449,13 @@ func (u *uiServer) handleRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "that model is in use — pick another one first", http.StatusConflict)
 		return
 	}
-	if _, cloned := voices.Name(u.svc.ActiveTTS()); cloned && body.ID == pocketModelID {
+	if body.ID == u.svc.AltTTS() {
+		http.Error(w, "that voice is loaded alongside the active one — switch it off under Settings first", http.StatusConflict)
+		return
+	}
+	_, activeClone := voices.Name(u.svc.ActiveTTS())
+	_, altClone := voices.Name(u.svc.AltTTS())
+	if (activeClone || altClone) && body.ID == pocketModelID {
 		http.Error(w, "a cloned voice is using this model — pick another voice first", http.StatusConflict)
 		return
 	}
@@ -471,6 +481,7 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		Speed           *float32 `json:"speed"`
 		Setup           *bool    `json:"setup"`
 		FilterNonSpeech *bool    `json:"filterNonSpeech"`
+		MixVoices       *bool    `json:"mixVoices"`
 		// Which services the setup card enables. Absent (older page) = the
 		// pre-choice behavior: voice and dictation on, transcription off.
 		Services *struct {
@@ -498,6 +509,9 @@ func (u *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.FilterNonSpeech != nil {
 		u.svc.SetFilterNonSpeech(*body.FilterNonSpeech)
+	}
+	if body.MixVoices != nil {
+		u.svc.SetMixVoices(*body.MixVoices)
 	}
 	// Answering the language question releases the service to pick and download models for the
 	// language the user actually speaks — on first run, and again whenever they re-run it.

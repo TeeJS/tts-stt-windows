@@ -18,6 +18,13 @@ type Config struct {
 	// back on restores the user's pick instead of resetting to a default.
 	PrevSTTModel string `json:"prevSttModel"`
 	PrevTTSVoice string `json:"prevTtsVoice"`
+	// MixVoices keeps a standard (Piper/built-in) voice loaded alongside a cloned one, so a
+	// Wyoming client can pick either per request instead of only the active engine's voices.
+	// StandardVoice / CloneVoice remember the last voice of each kind the user chose, which
+	// is what the second engine loads. Costs the second engine's memory (~80 MB for Piper).
+	MixVoices     bool   `json:"mixVoices"`
+	StandardVoice string `json:"standardVoice"` // last catalog or built-in voice used; "" = language default
+	CloneVoice    string `json:"cloneVoice"`    // last "pocket:<name>" used; "" = first clone in voices\
 	Language     string `json:"language"` // the user's language: drives defaults and multi-language hints
 	// SttAutoLanguage drops the Language hint for multi-language STT models so they detect the
 	// spoken language per utterance — required when the audio isn't the user's own language
