@@ -202,8 +202,8 @@ func (s *Store) List() ([]string, error) {
 
 type Detail struct {
 	Name    string  `json:"name"`
-	ID      string  `json:"id"`      // "pocket:<name>", what the voice picker sends
-	Seconds float64 `json:"seconds"` // clip length
+	ID      string  `json:"id"`       // "pocket:<name>", what the voice picker sends
+	Seconds float64 `json:"seconds"`  // clip length
 	AddedAt string  `json:"added_at"` // RFC3339 UTC, from the file's mtime
 }
 

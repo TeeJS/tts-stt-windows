@@ -94,15 +94,18 @@ func TestTTSSession(t *testing.T) {
 	for i := range pcm {
 		pcm[i] = byte(i % 251)
 	}
-	go ServeTTS(l, func(text string) ([]byte, AudioFormat, error) {
+	go ServeTTS(l, func(text, voice string) ([]byte, AudioFormat, error) {
 		if text != "say this" {
 			return nil, AudioFormat{}, fmt.Errorf("wrong text %q", text)
+		}
+		if voice != "pocket:bria" {
+			return nil, AudioFormat{}, fmt.Errorf("voice %q not passed through", voice)
 		}
 		return pcm, AudioFormat{22050, 2, 1}, nil
 	}, StaticInfo(BuildInfo("", "test-voice")), t.Logf)
 
 	conn, r := dial(t, l)
-	writeInline(t, conn, "synthesize", `{"text":"say this"}`, nil)
+	writeInline(t, conn, "synthesize", `{"text":"say this","voice":{"name":"pocket:bria"}}`, nil)
 
 	ev, err := ReadEvent(r)
 	if err != nil {
@@ -132,8 +135,8 @@ func TestTTSSession(t *testing.T) {
 
 func TestDescribe(t *testing.T) {
 	l := listen(t)
-	go ServeTTS(l, func(string) ([]byte, AudioFormat, error) { return nil, AudioFormat{}, nil },
-		StaticInfo(BuildInfo("", "test-voice")), t.Logf)
+	go ServeTTS(l, func(string, string) ([]byte, AudioFormat, error) { return nil, AudioFormat{}, nil },
+		StaticInfo(BuildInfo("", "test-voice", "", "pocket:bria")), t.Logf)
 	conn, r := dial(t, l)
 	writeInline(t, conn, "describe", "", nil)
 	ev, err := ReadEvent(r)
@@ -142,6 +145,11 @@ func TestDescribe(t *testing.T) {
 	}
 	if ev.Type != "info" || ev.Data["tts"] == nil {
 		t.Fatalf("got %q %v", ev.Type, ev.Data)
+	}
+	// Every non-empty voice is advertised, default first; the empty one is dropped.
+	voices := ev.Data["tts"].([]any)[0].(map[string]any)["voices"].([]any)
+	if len(voices) != 2 || voices[0].(map[string]any)["name"] != "test-voice" || voices[1].(map[string]any)["name"] != "pocket:bria" {
+		t.Fatalf("voices advertised: %v", voices)
 	}
 }
 

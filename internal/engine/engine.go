@@ -194,26 +194,47 @@ func (p *PocketTTS) SetSteps(n int) {
 	p.mu.Unlock()
 }
 
+// Synthesize speaks text in the voice installed by SetReference.
 func (p *PocketTTS) Synthesize(text string) ([]byte, int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.generate(text, p.ref, p.refRate)
+}
+
+// SynthesizeWith speaks text in a different voice for this one request, leaving the installed
+// reference alone — how a Wyoming client picks a voice per `synthesize`. sherpa caches the
+// speaker embedding per clip, so alternating voices costs nothing after each one's first use.
+func (p *PocketTTS) SynthesizeWith(text string, ref []float32, refRate int) ([]byte, int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.generate(text, ref, refRate)
+}
+
+func (p *PocketTTS) generate(text string, ref []float32, refRate int) ([]byte, int, error) {
 	if p.tts == nil {
 		return nil, 0, fmt.Errorf("pocket-tts: engine closed")
 	}
-	if len(p.ref) == 0 {
+	if len(ref) == 0 {
 		return nil, 0, fmt.Errorf("pocket-tts: no reference voice set")
 	}
 	gen := sherpa.GenerationConfig{
 		Speed:               p.speed,
-		ReferenceAudio:      p.ref,
-		ReferenceSampleRate: p.refRate,
+		ReferenceAudio:      ref,
+		ReferenceSampleRate: refRate,
 		NumSteps:            p.steps,
 	}
 	audio := p.tts.GenerateWithConfig(text, &gen, nil)
 	if audio == nil || len(audio.Samples) == 0 {
 		return nil, 0, fmt.Errorf("synthesis produced no audio for %q", text)
 	}
-	return floatToPCM16(audio.Samples), audio.SampleRate, nil
+	samples := audio.Samples
+	// The model has no reliable end-of-speech for a clip that isn't a voice (a pure tone as
+	// reference yielded 40 s for one sentence), so cap the output at a generous reading pace:
+	// 3 s plus 0.15 s per character — about half the speed of normal speech — scaled by speed.
+	if limit := int((3 + 0.15*float64(len(text))) / float64(p.speed) * float64(audio.SampleRate)); len(samples) > limit {
+		samples = samples[:limit]
+	}
+	return floatToPCM16(samples), audio.SampleRate, nil
 }
 
 // Close is safe on a nil receiver — see PiperTTS.Close.

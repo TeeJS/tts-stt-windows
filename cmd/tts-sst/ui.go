@@ -515,7 +515,7 @@ func (u *uiServer) handleTest(w http.ResponseWriter, r *http.Request) {
 	if body.Text == "" {
 		body.Text = "This is how I sound."
 	}
-	pcm, format, err := u.svc.synthesize(body.Text)
+	pcm, format, err := u.svc.synthesize(body.Text, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

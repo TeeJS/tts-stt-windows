@@ -154,7 +154,24 @@ func label(id string) string {
 // info answers a `describe` with what is true right now — which services are actually running and
 // which model each is using.
 func (s *service) info() wyoming.Info {
-	return wyoming.BuildInfo(advertised(s.ActiveSTT()), advertised(s.ActiveTTS()))
+	active := s.ActiveTTS()
+	ttsVoices := []string{advertised(active)}
+	// Every cloned voice is selectable per request while a clone is active (see synthesize), so
+	// advertise them by id — the active one too — because a client sends the advertised name
+	// back as voice.name.
+	if _, cloned := voices.Name(active); cloned {
+		ttsVoices[0] = active
+		if store, err := voices.NewStore(voicesDir()); err == nil {
+			if names, err := store.List(); err == nil {
+				for _, n := range names {
+					if id := voices.ID(n); id != active {
+						ttsVoices = append(ttsVoices, id)
+					}
+				}
+			}
+		}
+	}
+	return wyoming.BuildInfo(advertised(s.ActiveSTT()), ttsVoices...)
 }
 
 // advertised is the model name to publish in Wyoming discovery, or "" for a service that is off
@@ -299,15 +316,37 @@ func (s *service) transcribe(pcm []byte, f wyoming.AudioFormat, _ string) (strin
 	return text, nil
 }
 
-func (s *service) synthesize(text string) ([]byte, wyoming.AudioFormat, error) {
+func (s *service) synthesize(text, requested string) ([]byte, wyoming.AudioFormat, error) {
 	s.mu.RLock()
-	voice := s.tts
+	voice, activeID := s.tts, s.ttsID
 	s.mu.RUnlock()
 	if voice == nil {
 		return nil, wyoming.AudioFormat{}, fmt.Errorf("no voice loaded")
 	}
 	t0 := time.Now()
-	pcm, rate, err := voice.Synthesize(text)
+	var (
+		pcm  []byte
+		rate int
+		err  error
+	)
+	// A client may name one of the cloned voices `describe` advertised. Honored when a PocketTTS
+	// engine is live (a clone is the active voice): the clip is swapped for this request only,
+	// so agents can each speak in their own voice without touching Settings. Any other name —
+	// a catalog voice, an unknown clone, or when Piper/SAPI is active — falls back to the
+	// active voice, which is what every client got before per-request voices existed.
+	if name, ok := voices.Name(requested); ok && requested != activeID {
+		if p, live := voice.(*engine.PocketTTS); live {
+			if store, serr := voices.NewStore(voicesDir()); serr == nil {
+				if ref, refRate, lerr := store.Load(name); lerr == nil {
+					pcm, rate, err = p.SynthesizeWith(text, ref, refRate)
+					goto done
+				}
+			}
+		}
+		log.Printf("tts: requested voice %q unavailable, using %s", requested, label(activeID))
+	}
+	pcm, rate, err = voice.Synthesize(text)
+done:
 	if err == nil && rate > 0 {
 		audio := float64(len(pcm)/2) / float64(rate)
 		log.Printf("tts: %.1fs audio in %v (%.2fx realtime) for %d chars", audio, time.Since(t0).Round(time.Millisecond), audio/time.Since(t0).Seconds(), len(text))
