@@ -17,6 +17,7 @@ import (
 	"github.com/TeeJS/tts-stt-windows/internal/config"
 	"github.com/TeeJS/tts-stt-windows/internal/diarize"
 	"github.com/TeeJS/tts-stt-windows/internal/models"
+	"github.com/TeeJS/tts-stt-windows/internal/voices"
 )
 
 //go:embed ui.html
@@ -295,6 +296,13 @@ func (u *uiServer) handleSelect(w http.ResponseWriter, r *http.Request) {
 		id, kind = offID, models.STT
 	case onTTSID, onSTTID, sapiVoiceID:
 	default:
+		if name, ok := voices.Name(body.ID); ok {
+			if store, err := voices.NewStore(voicesDir()); err != nil || !store.Exists(name) {
+				http.Error(w, "unknown voice", http.StatusNotFound)
+				return
+			}
+			break
+		}
 		m, ok := models.ByID(body.ID)
 		if !ok {
 			http.Error(w, "unknown model", http.StatusNotFound)

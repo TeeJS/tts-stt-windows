@@ -4,10 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,12 +12,21 @@ import (
 	"github.com/TeeJS/tts-stt-windows/internal/diarize"
 	"github.com/TeeJS/tts-stt-windows/internal/engine"
 	"github.com/TeeJS/tts-stt-windows/internal/models"
+	"github.com/TeeJS/tts-stt-windows/internal/voices"
 	"github.com/TeeJS/tts-stt-windows/internal/wyoming"
 )
 
 // sapiVoiceID is the built-in Windows voice: not in the catalog (nothing to download) but
 // selectable like any other, and the only voice guaranteed to exist before any download.
 const sapiVoiceID = "windows-builtin"
+
+// pocketModelID is the catalog entry for the voice-cloning model. It is never selected directly:
+// the user picks a cloned voice ("pocket:<name>", see internal/voices) and the model follows.
+const pocketModelID = "pocket-tts"
+
+// voicesDir holds the reference clips cloned voices are built from — one WAV per voice; copy
+// the folder to back them up or move machines.
+func voicesDir() string { return filepath.Join(config.Dir(), "voices") }
 
 // offID marks a service the user has switched off. Stored in the same config field as a model id
 // (like sapiVoiceID) rather than as a separate flag, so "which model, if any" stays one value.
@@ -132,6 +138,9 @@ func label(id string) string {
 	case "":
 		return "none"
 	}
+	if name, ok := voices.Name(id); ok {
+		return name + " (cloned)"
+	}
 	if m, ok := models.ByID(id); ok {
 		if m.Region != "" {
 			return m.Name + " (" + m.Region + ")"
@@ -173,9 +182,6 @@ func (s *service) Start() {
 		// and an upgrade must not leave the user mute.
 		defVoice, defSTT := models.DefaultsFor(s.cfg.Language)
 		voiceID := s.resolve(s.cfg.TTSVoice, models.TTS, defVoice.ID)
-		if os.Getenv("TTS_SST_POCKET_TEST") == "1" { // TEMP (M1 smoke test): remove in M2
-			voiceID = "pocket:test"
-		}
 		sttID := s.resolve(s.cfg.STTModel, models.STT, defSTT.ID)
 		// Voice first: it loads in seconds where a speech model can take a minute to download,
 		// so speech is available as early as possible.
@@ -206,8 +212,15 @@ func (s *service) resolve(id string, kind models.Kind, fallback string) string {
 	if isOff(id) {
 		return id
 	}
-	if kind == models.TTS && (id == sapiVoiceID || strings.HasPrefix(id, "pocket:")) {
+	if kind == models.TTS && id == sapiVoiceID {
 		return id
+	}
+	if name, ok := voices.Name(id); ok && kind == models.TTS {
+		if store, err := voices.NewStore(voicesDir()); err == nil && store.Exists(name) {
+			return id
+		}
+		log.Printf("configured cloned voice %q has no clip in %s; falling back to %q", name, voicesDir(), fallback)
+		return fallback
 	}
 	if m, ok := models.ByID(id); ok && m.Kind == kind {
 		return id
@@ -375,39 +388,11 @@ func (s *service) useTTS(id string) error {
 	var voice engine.TTS
 	if id == sapiVoiceID {
 		voice = engine.NewSapiTTS()
-	} else if id == "pocket:test" { // TEMP (M1 smoke test): hard-wired to the archive's bria.wav; replaced by voices\ in M2
-		m, ok := models.ByID("pocket-tts")
-		if !ok {
-			return fmt.Errorf("pocket-tts not in catalog")
-		}
-		if err := s.ensure(m); err != nil {
-			return err
-		}
-		s.setBusy("Loading " + m.Name + "…")
-		defer s.setBusy("")
-		dir := filepath.Join(s.modelsDir, m.Dir)
-		t0 := time.Now()
-		v, err := engine.NewPocketTTS(dir, s.threads)
+	} else if name, ok := voices.Name(id); ok {
+		v, err := s.usePocketVoice(name)
 		if err != nil {
 			return err
 		}
-		log.Printf("pocket-tts: model loaded in %v", time.Since(t0))
-		clip, err := os.ReadFile(filepath.Join(dir, "test_wavs", "bria.wav"))
-		if err != nil {
-			v.Close()
-			return err
-		}
-		samples, err := diarize.DecodeAudio(clip)
-		if err != nil {
-			v.Close()
-			return err
-		}
-		v.SetReference(samples, 16000)
-		v.SetSpeed(s.cfg.Speed)
-		if n, _ := strconv.Atoi(os.Getenv("TTS_SST_POCKET_STEPS")); n > 0 { // TEMP (M1): compare NumSteps
-			v.SetSteps(n)
-		}
-		log.Printf("pocket-tts: reference clip %.1fs", float64(len(samples))/16000)
 		voice = v
 	} else {
 		m, ok := models.ByID(id)
@@ -430,8 +415,49 @@ func (s *service) useTTS(id string) error {
 	old := s.tts
 	s.tts, s.ttsID = voice, id
 	s.mu.Unlock()
-	closeAsync(old)
+	if old != voice { // switching between two cloned voices keeps the same PocketTTS engine
+		closeAsync(old)
+	}
 	return nil
+}
+
+// usePocketVoice activates a cloned voice: the shared pocket-tts model (downloaded on first use)
+// plus the named reference clip from voicesDir(). When a PocketTTS engine is already live only
+// the clip changes, which is near-instant — the model stays loaded.
+func (s *service) usePocketVoice(name string) (engine.TTS, error) {
+	store, err := voices.NewStore(voicesDir())
+	if err != nil {
+		return nil, err
+	}
+	samples, rate, err := store.Load(name)
+	if err != nil {
+		return nil, fmt.Errorf("cloned voice %q: %w", name, err)
+	}
+	s.mu.RLock()
+	live, _ := s.tts.(*engine.PocketTTS)
+	s.mu.RUnlock()
+	if live == nil {
+		m, ok := models.ByID(pocketModelID)
+		if !ok {
+			return nil, fmt.Errorf("%s is not in the catalog", pocketModelID)
+		}
+		if err := s.ensure(m); err != nil {
+			return nil, err
+		}
+		s.setBusy("Loading " + m.Name + "…")
+		defer s.setBusy("")
+		t0 := time.Now()
+		live, err = engine.NewPocketTTS(filepath.Join(s.modelsDir, m.Dir), s.threads)
+		if err != nil {
+			return nil, err
+		}
+		live.SetSpeed(s.cfg.Speed)
+		log.Printf("pocket-tts: model loaded in %v", time.Since(t0).Round(time.Millisecond))
+	}
+	// sherpa resamples the clip to its own 24 kHz internally; pass the stored rate as-is.
+	live.SetReference(samples, rate)
+	log.Printf("pocket-tts: voice %q (%.1fs clip)", name, float64(len(samples))/float64(rate))
+	return live, nil
 }
 
 // SwitchSTT / SwitchTTS are the UI entry points: swap engines, bring the listener into line with
@@ -495,12 +521,16 @@ func (s *service) SetSpeed(speed float32) {
 	s.cfg.Speed = speed
 	config.Save(s.cfg)
 	s.mu.RLock()
-	v, ok := s.tts.(*engine.PiperTTS)
+	v, ok := s.tts.(speedSetter)
 	s.mu.RUnlock()
 	if ok {
 		v.SetSpeed(speed)
 	}
 }
+
+// speedSetter is implemented by the engines with a speaking-rate control (Piper, PocketTTS);
+// the Windows built-in voice ignores the slider.
+type speedSetter interface{ SetSpeed(float32) }
 
 // SetLanguage persists the user's language; it drives multi-language model hints and default picks.
 func (s *service) SetLanguage(lang string) {
