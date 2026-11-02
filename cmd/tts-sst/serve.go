@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/TeeJS/tts-stt-windows/internal/config"
 	"github.com/TeeJS/tts-stt-windows/internal/diarize"
@@ -169,6 +173,9 @@ func (s *service) Start() {
 		// and an upgrade must not leave the user mute.
 		defVoice, defSTT := models.DefaultsFor(s.cfg.Language)
 		voiceID := s.resolve(s.cfg.TTSVoice, models.TTS, defVoice.ID)
+		if os.Getenv("TTS_SST_POCKET_TEST") == "1" { // TEMP (M1 smoke test): remove in M2
+			voiceID = "pocket:test"
+		}
 		sttID := s.resolve(s.cfg.STTModel, models.STT, defSTT.ID)
 		// Voice first: it loads in seconds where a speech model can take a minute to download,
 		// so speech is available as early as possible.
@@ -199,7 +206,7 @@ func (s *service) resolve(id string, kind models.Kind, fallback string) string {
 	if isOff(id) {
 		return id
 	}
-	if kind == models.TTS && id == sapiVoiceID {
+	if kind == models.TTS && (id == sapiVoiceID || strings.HasPrefix(id, "pocket:")) {
 		return id
 	}
 	if m, ok := models.ByID(id); ok && m.Kind == kind {
@@ -285,7 +292,12 @@ func (s *service) synthesize(text string) ([]byte, wyoming.AudioFormat, error) {
 	if voice == nil {
 		return nil, wyoming.AudioFormat{}, fmt.Errorf("no voice loaded")
 	}
+	t0 := time.Now()
 	pcm, rate, err := voice.Synthesize(text)
+	if err == nil && rate > 0 {
+		audio := float64(len(pcm)/2) / float64(rate)
+		log.Printf("tts: %.1fs audio in %v (%.2fx realtime) for %d chars", audio, time.Since(t0).Round(time.Millisecond), audio/time.Since(t0).Seconds(), len(text))
+	}
 	return pcm, wyoming.AudioFormat{Rate: rate, Width: 2, Channels: 1}, err
 }
 
@@ -363,6 +375,40 @@ func (s *service) useTTS(id string) error {
 	var voice engine.TTS
 	if id == sapiVoiceID {
 		voice = engine.NewSapiTTS()
+	} else if id == "pocket:test" { // TEMP (M1 smoke test): hard-wired to the archive's bria.wav; replaced by voices\ in M2
+		m, ok := models.ByID("pocket-tts")
+		if !ok {
+			return fmt.Errorf("pocket-tts not in catalog")
+		}
+		if err := s.ensure(m); err != nil {
+			return err
+		}
+		s.setBusy("Loading " + m.Name + "…")
+		defer s.setBusy("")
+		dir := filepath.Join(s.modelsDir, m.Dir)
+		t0 := time.Now()
+		v, err := engine.NewPocketTTS(dir, s.threads)
+		if err != nil {
+			return err
+		}
+		log.Printf("pocket-tts: model loaded in %v", time.Since(t0))
+		clip, err := os.ReadFile(filepath.Join(dir, "test_wavs", "bria.wav"))
+		if err != nil {
+			v.Close()
+			return err
+		}
+		samples, err := diarize.DecodeAudio(clip)
+		if err != nil {
+			v.Close()
+			return err
+		}
+		v.SetReference(samples, 16000)
+		v.SetSpeed(s.cfg.Speed)
+		if n, _ := strconv.Atoi(os.Getenv("TTS_SST_POCKET_STEPS")); n > 0 { // TEMP (M1): compare NumSteps
+			v.SetSteps(n)
+		}
+		log.Printf("pocket-tts: reference clip %.1fs", float64(len(samples))/16000)
+		voice = v
 	} else {
 		m, ok := models.ByID(id)
 		if !ok || m.Kind != models.TTS {

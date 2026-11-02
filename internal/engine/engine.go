@@ -110,6 +110,125 @@ func (p *PiperTTS) Close() {
 	}
 }
 
+// ---- PocketTTS voice cloning (Kyutai Pocket TTS via sherpa-onnx) ----
+
+// PocketTTS is one loaded model that speaks in whichever voice its reference clip describes. The
+// clip is swapped with SetReference without reloading the model; sherpa caches the speaker
+// embedding per clip, so re-using the same clip costs nothing after the first call.
+type PocketTTS struct {
+	mu      sync.Mutex
+	tts     *sherpa.OfflineTts
+	ref     []float32 // reference clip, mono float32
+	refRate int
+	speed   float32
+	steps   int // flow-matching steps; sherpa's reference CLI uses 2
+}
+
+// NewPocketTTS loads the sherpa-onnx-pocket-tts-* archive directory. The layout is fixed, so the
+// file names are spelled out rather than discovered. No voice is set until SetReference.
+func NewPocketTTS(modelDir string, numThreads int) (*PocketTTS, error) {
+	lmFlow, err := findPreferred(modelDir, "lm_flow.int8.onnx", "lm_flow.onnx")
+	if err != nil {
+		return nil, fmt.Errorf("pocket-tts %s: %w", modelDir, err)
+	}
+	lmMain, err := findPreferred(modelDir, "lm_main.int8.onnx", "lm_main.onnx")
+	if err != nil {
+		return nil, fmt.Errorf("pocket-tts %s: %w", modelDir, err)
+	}
+	decoder, err := findPreferred(modelDir, "decoder.int8.onnx", "decoder.onnx")
+	if err != nil {
+		return nil, fmt.Errorf("pocket-tts %s: %w", modelDir, err)
+	}
+	for _, f := range []string{"encoder.onnx", "text_conditioner.onnx", "vocab.json", "token_scores.json"} {
+		if !isFile(filepath.Join(modelDir, f)) {
+			return nil, fmt.Errorf("pocket-tts %s: missing %s — incomplete download?", modelDir, f)
+		}
+	}
+	cfg := sherpa.OfflineTtsConfig{
+		Model: sherpa.OfflineTtsModelConfig{
+			Pocket: sherpa.OfflineTtsPocketModelConfig{
+				LmFlow:                      lmFlow,
+				LmMain:                      lmMain,
+				Encoder:                     filepath.Join(modelDir, "encoder.onnx"),
+				Decoder:                     decoder,
+				TextConditioner:             filepath.Join(modelDir, "text_conditioner.onnx"),
+				VocabJson:                   filepath.Join(modelDir, "vocab.json"),
+				TokenScoresJson:             filepath.Join(modelDir, "token_scores.json"),
+				VoiceEmbeddingCacheCapacity: 8,
+			},
+			NumThreads: numThreads,
+			Provider:   "cpu",
+		},
+	}
+	tts := sherpa.NewOfflineTts(&cfg)
+	if tts == nil {
+		return nil, fmt.Errorf("pocket-tts %s: sherpa-onnx failed to load (see log for model errors)", modelDir)
+	}
+	return &PocketTTS{tts: tts, speed: 1.0, steps: 2}, nil
+}
+
+// SetReference installs the voice to clone: a mono float32 clip at sampleRate.
+func (p *PocketTTS) SetReference(samples []float32, sampleRate int) {
+	p.mu.Lock()
+	p.ref, p.refRate = samples, sampleRate
+	p.mu.Unlock()
+}
+
+// SetSpeed adjusts speaking rate (1.0 = natural); same clamp as PiperTTS.
+func (p *PocketTTS) SetSpeed(speed float32) {
+	if speed < 0.5 || speed > 2.0 {
+		return
+	}
+	p.mu.Lock()
+	p.speed = speed
+	p.mu.Unlock()
+}
+
+// SetSteps sets the number of flow-matching steps (quality vs. CPU time).
+func (p *PocketTTS) SetSteps(n int) {
+	if n < 1 {
+		return
+	}
+	p.mu.Lock()
+	p.steps = n
+	p.mu.Unlock()
+}
+
+func (p *PocketTTS) Synthesize(text string) ([]byte, int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.tts == nil {
+		return nil, 0, fmt.Errorf("pocket-tts: engine closed")
+	}
+	if len(p.ref) == 0 {
+		return nil, 0, fmt.Errorf("pocket-tts: no reference voice set")
+	}
+	gen := sherpa.GenerationConfig{
+		Speed:               p.speed,
+		ReferenceAudio:      p.ref,
+		ReferenceSampleRate: p.refRate,
+		NumSteps:            p.steps,
+	}
+	audio := p.tts.GenerateWithConfig(text, &gen, nil)
+	if audio == nil || len(audio.Samples) == 0 {
+		return nil, 0, fmt.Errorf("synthesis produced no audio for %q", text)
+	}
+	return floatToPCM16(audio.Samples), audio.SampleRate, nil
+}
+
+// Close is safe on a nil receiver — see PiperTTS.Close.
+func (p *PocketTTS) Close() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.tts != nil {
+		sherpa.DeleteOfflineTts(p.tts)
+		p.tts = nil
+	}
+}
+
 // ---- Speech-to-text (whisper or parakeet/transducer via sherpa-onnx) ----
 
 type Recognizer struct {
