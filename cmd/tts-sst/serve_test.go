@@ -36,6 +36,27 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+// sameKind decides whether a switch can promote the already-loaded second engine instead of
+// loading another: any two clones share one PocketTTS engine; standard voices never do.
+func TestSameKind(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"pocket:bria", "pocket:clone2", true},
+		{"pocket:bria", "pocket:bria", true},
+		{"pocket:bria", "piper-en-GB-cori-medium", false},
+		{"piper-en-GB-cori-medium", "piper-en-GB-alan-medium", false},
+		{sapiVoiceID, "pocket:bria", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		if got := sameKind(c.a, c.b); got != c.want {
+			t.Errorf("sameKind(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func free(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")

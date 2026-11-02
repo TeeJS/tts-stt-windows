@@ -204,6 +204,13 @@
         <input type="checkbox" id="filterNS" style="width:20px;height:20px;accent-color:var(--accent)">
       </div>
       <div class="row">
+        <label for="mixVoices">Keep both voice engines loaded
+          <span class="hint">Loads a standard voice alongside a cloned one (and the other way round), so apps can ask for either kind of voice at the same time on port 10200. Off: only the selected voice's engine is loaded and apps get that kind. Costs the second engine's memory — about 80 MB for a standard voice, about 530 MB for the cloning model.</span>
+          <span class="hint" id="mixHint"></span>
+        </label>
+        <input type="checkbox" id="mixVoices" style="width:20px;height:20px;accent-color:var(--accent)">
+      </div>
+      <div class="row">
         <label>Test the current voice<span class="hint" id="portsHint"></span></label>
         <button class="act" id="testBtn">▶ Play sample</button>
       </div>
@@ -622,6 +629,8 @@ function render() {
   $('#speed').value = state.speed;
   $('#speedVal').textContent = Number(state.speed).toFixed(2).replace(/0$/,'') + '×';
   $('#filterNS').checked = state.filterNonSpeech;
+  $('#mixVoices').checked = !!state.mixVoices;
+  $('#mixHint').textContent = state.altTTS ? `Currently also loaded: ${state.altTTS}.` : (state.mixVoices ? 'Nothing to pair yet — add a cloned voice under Voices.' : '');
   $('#portsHint').textContent = `Serving speech on port ${state.ports.stt}, voice on port ${state.ports.tts}.`;
 
   if (!state.setup) {
@@ -710,6 +719,7 @@ $('#setLang').onchange = async e => {
 $('#speed').oninput = e => { $('#speedVal').textContent = Number(e.target.value).toFixed(2).replace(/0$/,'') + '×'; };
 $('#speed').onchange = async e => { await post('/api/settings', {speed: Number(e.target.value)}); };
 $('#filterNS').onchange = async e => { await post('/api/settings', {filterNonSpeech: e.target.checked}); };
+$('#mixVoices').onchange = async e => { await post('/api/settings', {mixVoices: e.target.checked}); setTimeout(load, 1500); };
 $('#diarThreshold').onchange = async e => {
   const t = Number(e.target.value);
   if (t >= 0.3 && t <= 0.95) await post('/api/meetings', {threshold: t});
