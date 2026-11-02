@@ -54,8 +54,10 @@ one clip per voice.
 - **Output:** 24 kHz, **English only**. On a 6-thread CPU a sentence synthesizes at about
   1.9× real time (3.6 s of speech in 1.9 s), and the model adds roughly 530 MB of memory while
   a cloned voice is active.
-- **Over Wyoming:** the active cloned voice is what port 10200 speaks with; `describe` reports
-  its name.
+- **Over Wyoming:** the active cloned voice is what port 10200 speaks with. While a clone is
+  active, `describe` lists every cloned voice as `pocket:<name>`, and a client that sends one of
+  those back as `voice.name` in `synthesize` gets that voice for the request — so each agent can
+  have its own voice without changing Settings.
 
 Only clone voices you have consent to use. The PocketTTS model files are published under
 CC-BY-4.0 and their author asks that they be used non-commercially; this app's own code is MIT.
