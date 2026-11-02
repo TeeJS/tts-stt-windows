@@ -242,6 +242,9 @@ func (u *uiServer) handleVoiceAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	// Held across the check and the file change so a switch can't activate this clip in between.
+	u.svc.switchMu.Lock()
+	defer u.svc.switchMu.Unlock()
 	// Case-insensitive like the file names: "pocket:Bob" active must also protect "bob".
 	if active, ok := voices.Name(u.svc.ActiveTTS()); ok && strings.EqualFold(strings.TrimSpace(active), strings.TrimSpace(body.Name)) {
 		http.Error(w, "this voice is in use — switch to another voice first", http.StatusConflict)

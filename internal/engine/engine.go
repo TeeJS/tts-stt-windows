@@ -223,19 +223,30 @@ func (p *PocketTTS) generate(text string, ref []float32, refRate int) ([]byte, i
 		ReferenceSampleRate: refRate,
 		NumSteps:            p.steps,
 	}
-	audio := p.tts.GenerateWithConfig(text, &gen, nil)
+	// The model has no reliable end-of-speech for a clip that isn't a voice (a pure tone as
+	// reference ran 40 s for one sentence), so generation is stopped — not merely trimmed —
+	// once it passes a generous reading pace: 3 s plus 0.15 s per character, about half the
+	// speed of normal speech, scaled by the speed setting. sherpa streams chunks to the
+	// callback as it decodes; returning false ends the decode and returns what was produced.
+	limit := int((3 + 0.15*float64(len(text))) / float64(p.speed) * float64(pocketSampleRate))
+	produced := 0
+	audio := p.tts.GenerateWithConfig(text, &gen, func(samples []float32, _ float32) bool {
+		produced += len(samples)
+		return produced < limit
+	})
 	if audio == nil || len(audio.Samples) == 0 {
 		return nil, 0, fmt.Errorf("synthesis produced no audio for %q", text)
 	}
 	samples := audio.Samples
-	// The model has no reliable end-of-speech for a clip that isn't a voice (a pure tone as
-	// reference yielded 40 s for one sentence), so cap the output at a generous reading pace:
-	// 3 s plus 0.15 s per character — about half the speed of normal speech — scaled by speed.
-	if limit := int((3 + 0.15*float64(len(text))) / float64(p.speed) * float64(audio.SampleRate)); len(samples) > limit {
+	if len(samples) > limit {
 		samples = samples[:limit]
 	}
 	return floatToPCM16(samples), audio.SampleRate, nil
 }
+
+// pocketSampleRate is PocketTTS's fixed output rate, needed to size the output cap before the
+// GeneratedAudio (which carries the real rate) exists.
+const pocketSampleRate = 24000
 
 // Close is safe on a nil receiver — see PiperTTS.Close.
 func (p *PocketTTS) Close() {

@@ -2,9 +2,11 @@ package engine
 
 import (
 	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // pocketModelDir finds the installed PocketTTS model, or skips. Two things a clean checkout
@@ -103,4 +105,37 @@ func TestPocketTTSSynthesize(t *testing.T) {
 	// Close must be nil-safe like the other engines (callers close the previous engine blindly).
 	var nilEngine *PocketTTS
 	nilEngine.Close()
+}
+
+// A reference that isn't a voice gives the model nothing to stop on; the cap must end the
+// decode early (not just trim afterwards), so this finishes in seconds, not the ~20 s it took
+// uncapped, and returns no more than the limit.
+func TestPocketTTSRunawayCap(t *testing.T) {
+	dir := pocketModelDir(t)
+	p, err := NewPocketTTS(dir, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	const rate = 16000
+	tone := make([]float32, 5*rate)
+	for i := range tone {
+		tone[i] = 0.3 * float32(math.Sin(2*math.Pi*160*float64(i)/rate))
+	}
+	p.SetReference(tone, rate)
+	text := "This is a test of the cloned voice."
+	limit := 3 + 0.15*float64(len(text))
+
+	t0 := time.Now()
+	pcm, sr, err := p.Synthesize(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secs := float64(len(pcm)/2) / float64(sr)
+	if secs > limit+0.5 {
+		t.Errorf("got %.1fs of audio, cap is %.1fs", secs, limit)
+	}
+	if took := time.Since(t0); took > 12*time.Second {
+		t.Errorf("decode ran %v — the cap did not stop generation early", took)
+	}
 }

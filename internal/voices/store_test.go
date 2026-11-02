@@ -43,13 +43,14 @@ func TestIDRoundTrip(t *testing.T) {
 
 func TestStorePathSafety(t *testing.T) {
 	s := newTestStore(t)
-	bad := []string{"", " ", ".", "..", "a/b", `a\b`, "..\\up", "../up", "nul\x00byte", "c:evil", "a<b", `q"uote`, "star*", "what?"}
+	bad := []string{"", " ", ".", "..", "a/b", `a\b`, "..\\up", "../up", "nul\x00byte", "c:evil", "a<b", `q"uote`, "star*", "what?",
+		"tab\tname", "bell\x07", "CON", "con", "Nul.old", "COM1", "lpt9"}
 	for _, name := range bad {
 		if err := s.Save(name, clip(5)); !errors.Is(err, ErrBadName) {
 			t.Errorf("Save(%q) = %v, want ErrBadName", name, err)
 		}
 	}
-	for _, name := range []string{"Matthew Evenson", "T.J. Schmitz", "José"} {
+	for _, name := range []string{"Matthew Evenson", "T.J. Schmitz", "José", "Connie", "Lptop"} {
 		if err := s.Save(name, clip(5)); err != nil {
 			t.Errorf("Save(%q) = %v, want nil", name, err)
 		}

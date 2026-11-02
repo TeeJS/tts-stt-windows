@@ -70,9 +70,11 @@ func Name(id string) (string, bool) {
 // diarization enrollment store) and maps it to its clip path.
 func (s *Store) pathFor(name string) (string, error) {
 	name = strings.TrimSpace(name)
-	// Path separators plus the characters NTFS refuses in a file name.
+	// Path separators, the characters NTFS refuses in a file name, control characters, and the
+	// DOS device names Windows reserves regardless of extension (CON.wav is still CON).
 	if name == "" || name == "." || name == ".." ||
-		strings.ContainsAny(name, `/\:<>"|?*`) || strings.ContainsRune(name, 0) {
+		strings.ContainsAny(name, `/\:<>"|?*`) || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) ||
+		reservedName(name) {
 		return "", fmt.Errorf("%w: %q", ErrBadName, name)
 	}
 	p := filepath.Join(s.dir, name+".wav")
@@ -80,6 +82,20 @@ func (s *Store) pathFor(name string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrBadName, name)
 	}
 	return p, nil
+}
+
+// reservedName reports a DOS device name (CON, PRN, AUX, NUL, COM1–9, LPT1–9), which Windows
+// refuses as a file name whatever the extension; compared case-insensitively like the FS does.
+func reservedName(name string) bool {
+	up := strings.ToUpper(strings.TrimSpace(name))
+	if i := strings.IndexByte(up, '.'); i >= 0 {
+		up = up[:i]
+	}
+	switch up {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	return len(up) == 4 && (up[:3] == "COM" || up[:3] == "LPT") && up[3] >= '1' && up[3] <= '9'
 }
 
 // Path returns the clip file for a voice, or ErrNotFound.
