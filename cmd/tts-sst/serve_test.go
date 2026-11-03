@@ -28,6 +28,8 @@ func TestResolve(t *testing.T) {
 		{"pocket:no-such-clip-" + itoa(int(time.Now().UnixNano()%1e6)), "fallback", models.TTS, "cloned voice whose clip is gone falls back"},
 		{"pocket:anything", "fallback", models.STT, "cloned voice id is never a speech model"},
 		{"pocket-tts", "pocket-tts", models.TTS, "the cloning model is a catalog entry; resolve passes it, the UI hides it"},
+		{"local:no-such-folder-" + itoa(int(time.Now().UnixNano()%1e6)), "fallback", models.TTS, "local voice whose folder is gone falls back"},
+		{"local:anything", "fallback", models.STT, "local voice id is never a speech model"},
 	}
 	for _, c := range cases {
 		if got := s.resolve(c.in, c.kind, "fallback"); got != c.want {
@@ -48,6 +50,8 @@ func TestSameKind(t *testing.T) {
 		{"pocket:bria", "piper-en-GB-cori-medium", false},
 		{"piper-en-GB-cori-medium", "piper-en-GB-alan-medium", false},
 		{sapiVoiceID, "pocket:bria", false},
+		{"local:mine", "pocket:bria", false},
+		{"local:mine", "local:other", false}, // local voices are standard voices: one engine each
 		{"", "", false},
 	}
 	for _, c := range cases {

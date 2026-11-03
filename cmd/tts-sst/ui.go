@@ -17,6 +17,7 @@ import (
 
 	"github.com/TeeJS/tts-stt-windows/internal/config"
 	"github.com/TeeJS/tts-stt-windows/internal/diarize"
+	"github.com/TeeJS/tts-stt-windows/internal/localvoices"
 	"github.com/TeeJS/tts-stt-windows/internal/models"
 	"github.com/TeeJS/tts-stt-windows/internal/voices"
 )
@@ -161,6 +162,10 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 			clones = d
 		}
 	}
+	local := localvoices.List(localVoicesDir())
+	if local == nil {
+		local = []localvoices.Voice{} // [] rather than null for the page
+	}
 	writeJSON(w, map[string]any{
 		"status":          svc.Status(),
 		"busy":            svc.Busy(),
@@ -183,6 +188,7 @@ func (u *uiServer) handleState(w http.ResponseWriter, r *http.Request) {
 		"diarThreshold":   svc.cfg.DiarThreshold,
 		"speakers":        speakers,
 		"voices":          clones,
+		"localVoices":     local,
 	})
 }
 
@@ -395,7 +401,7 @@ func (u *uiServer) handleSelect(w http.ResponseWriter, r *http.Request) {
 	}
 	// "off" and "on" are per-service, so the page sends a distinct id for each; the offs
 	// map to the same stored value, the ons restore the service's previous model.
-	// Everything else is either the built-in voice or a catalog entry.
+	// Everything else is the built-in voice, a cloned or local voice, or a catalog entry.
 	id, kind := body.ID, models.TTS
 	switch body.ID {
 	case offTTSID:
@@ -406,6 +412,13 @@ func (u *uiServer) handleSelect(w http.ResponseWriter, r *http.Request) {
 	default:
 		if name, ok := voices.Name(body.ID); ok {
 			if store, err := voices.NewStore(voicesDir()); err != nil || !store.Exists(name) {
+				http.Error(w, "unknown voice", http.StatusNotFound)
+				return
+			}
+			break
+		}
+		if name, ok := localvoices.Name(body.ID); ok {
+			if !localvoices.Exists(localVoicesDir(), name) {
 				http.Error(w, "unknown voice", http.StatusNotFound)
 				return
 			}
@@ -457,6 +470,11 @@ func (u *uiServer) handleRemove(w http.ResponseWriter, r *http.Request) {
 	_, altClone := voices.Name(u.svc.AltTTS())
 	if (activeClone || altClone) && body.ID == pocketModelID {
 		http.Error(w, "a cloned voice is using this model — pick another voice first", http.StatusConflict)
+		return
+	}
+	if _, local := localvoices.Name(body.ID); local {
+		// Nothing was downloaded: the user put these files there and removes them the same way.
+		http.Error(w, "local voices are managed in %APPDATA%\\tts-sst\\piper — delete the folder to remove one", http.StatusBadRequest)
 		return
 	}
 	m, ok := models.ByID(body.ID)

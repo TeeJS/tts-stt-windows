@@ -131,6 +131,9 @@
         <button class="act primary" id="voiceBtn">Add voice</button>
       </div>
       <div id="voiceStatus" class="enroll-status" role="status" aria-live="polite" hidden><span class="spinner"></span><span id="voiceStatusText"></span></div>
+      <div class="group">Local voices</div>
+      <p class="sub">Piper voices you trained or downloaded yourself. Drop <code>&lt;name&gt;.onnx</code> and <code>&lt;name&gt;.onnx.json</code> into <code>%APPDATA%\tts-sst\piper\&lt;name&gt;\</code> and it appears here; the first use borrows the phoneme data from a downloaded catalog voice.</p>
+      <div id="localVoiceList"></div>
       <div class="group">Catalog voices</div>
       <div class="toolbar">
         <input type="search" id="q-voices" placeholder="Search voices…">
@@ -413,7 +416,8 @@ function serviceToggleCard(kind, on) {
   const serviceOn = activeId !== 'off' && activeId !== '';
   const isThisRow = on === serviceOn;
   const activeModel = state.models.find(m => m.kind === kind && m.active && m.family !== 'off')
-    || (kind === 'tts' && (state.voices || []).find(v => v.id === activeId) && {name: activeId.slice('pocket:'.length) + ' (cloned)'});
+    || (kind === 'tts' && (state.voices || []).find(v => v.id === activeId) && {name: activeId.slice('pocket:'.length) + ' (cloned)'})
+    || (kind === 'tts' && (state.localVoices || []).find(v => v.id === activeId) && {name: (state.localVoices || []).find(v => v.id === activeId).label});
   const port = kind === 'tts' ? state.ports.tts : state.ports.stt;
   const what = kind === 'tts' ? 'text-to-speech' : 'speech-to-text';
 
@@ -497,6 +501,36 @@ function renderVoices() {
         }
       };
       actions.appendChild(del);
+    }
+    list.appendChild(el);
+  });
+}
+
+// Local Piper voices: read-only list (the files are managed in the folder, nothing to upload or
+// delete here), each with a Use button wired like a catalog voice card.
+function renderLocalVoices() {
+  const list = $('#localVoiceList');
+  list.innerHTML = '';
+  if (!state.localVoices || !state.localVoices.length) {
+    list.innerHTML = '<div class="empty">No local voices found in %APPDATA%\\tts-sst\\piper.</div>';
+    return;
+  }
+  state.localVoices.forEach(v => {
+    const active = state.activeTTS === v.id;
+    const el = document.createElement('div');
+    el.className = 'card' + (active ? ' active' : '');
+    el.innerHTML = `<div class="info"><div class="title"><span class="name"></span>${active ? '<span class="badge on">Active</span>' : ''}</div><div class="meta"></div></div>
+      <div class="actions"></div>`;
+    el.querySelector('.name').textContent = v.label;
+    el.querySelector('.meta').textContent = `piper\\${v.name}\\${v.name}.onnx · Piper`;
+    if (!active) {
+      const use = document.createElement('button');
+      use.className = 'act primary';
+      use.textContent = 'Use';
+      use.setAttribute('aria-label', `Use voice ${v.label}`);
+      use.disabled = !!state.busy;
+      use.onclick = async () => { use.disabled = true; use.textContent = 'Starting…'; await post('/api/select', {id: v.id}); load(); };
+      el.querySelector('.actions').appendChild(use);
     }
     list.appendChild(el);
   });
@@ -613,6 +647,7 @@ function render() {
   renderServiceToggles();
   renderMeetings();
   renderVoices();
+  renderLocalVoices();
 
   renderList('tts', $('#list-voices'), $('#q-voices'), $('#lang-voices'));
   renderList('stt', $('#list-speech'), $('#q-speech'), $('#lang-speech'));

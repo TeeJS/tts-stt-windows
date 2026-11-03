@@ -13,7 +13,7 @@ type Config struct {
 	STTPort  int    `json:"sttPort"`
 	TTSPort  int    `json:"ttsPort"`
 	STTModel string `json:"sttModel"` // catalog id, "" = pick a default for Language
-	TTSVoice string `json:"ttsVoice"` // catalog id or "windows-builtin", "" = pick a default
+	TTSVoice string `json:"ttsVoice"` // catalog id, "windows-builtin", "pocket:<name>" or "local:<name>"; "" = pick a default
 	// Prev* remember the model in use when a service was switched off, so turning it
 	// back on restores the user's pick instead of resetting to a default.
 	PrevSTTModel string `json:"prevSttModel"`
@@ -23,9 +23,9 @@ type Config struct {
 	// StandardVoice / CloneVoice remember the last voice of each kind the user chose, which
 	// is what the second engine loads. Costs the second engine's memory (~80 MB for Piper).
 	MixVoices     bool   `json:"mixVoices"`
-	StandardVoice string `json:"standardVoice"` // last catalog or built-in voice used; "" = language default
+	StandardVoice string `json:"standardVoice"` // last catalog, local ("local:<name>") or built-in voice used; "" = language default
 	CloneVoice    string `json:"cloneVoice"`    // last "pocket:<name>" used; "" = first clone in voices\
-	Language     string `json:"language"` // the user's language: drives defaults and multi-language hints
+	Language      string `json:"language"`      // the user's language: drives defaults and multi-language hints
 	// SttAutoLanguage drops the Language hint for multi-language STT models so they detect the
 	// spoken language per utterance — required when the audio isn't the user's own language
 	// (live translation). A pinned hint makes whisper mistranslate foreign speech (see
