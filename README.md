@@ -80,11 +80,14 @@ yourself, or downloaded from elsewhere — works without any conversion:
 3. It appears under **Local voices** on the Voices tab; press **Use**. In `config.json` it is
    `"ttsVoice": "local:<name>"`, and over Wyoming it is advertised and requested as `local:<name>`.
 
-On first use the app writes the `tokens.txt` sherpa-onnx needs from the json's `phoneme_id_map`
-and links (or copies) `espeak-ng-data` from a downloaded catalog Piper voice — the language default
-is downloaded if none is installed yet. Both are left alone afterwards, so a hand-edited
-`tokens.txt` survives. Remove a voice by deleting its folder; there is nothing to delete from the
-settings page. Local voices count as standard voices for **Keep both voice engines loaded**.
+On first use the app builds a `sherpa\` subfolder next to your files with what sherpa-onnx needs:
+a copy of the model with sherpa's metadata (sample rate, language…) appended, a `tokens.txt`
+derived from the json's `phoneme_id_map`, and `espeak-ng-data` linked (or copied) from a
+downloaded catalog Piper voice — the language default is downloaded if none is installed yet. Your
+own `.onnx` is never modified, so the same file can be dropped into other Piper hosts as-is; the
+subfolder is rebuilt automatically when you replace it. Remove a voice by deleting its folder;
+there is nothing to delete from the settings page. Local voices count as standard voices for
+**Keep both voice engines loaded**.
 
 ## Settings
 

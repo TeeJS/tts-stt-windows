@@ -3,13 +3,17 @@
 // holding the standard Piper export, <name>.onnx + <name>.onnx.json, and is selected with the id
 // "local:<name>" (see IDPrefix), the same one-string convention as catalog and cloned voices.
 //
-// sherpa-onnx's vits-piper loader wants two more things a Piper export doesn't ship with: a
+// sherpa-onnx's vits-piper loader wants three things a raw Piper export doesn't carry: a
 // tokens.txt (derived here from the json's phoneme_id_map, in the layout sherpa's own converter
-// writes) and an espeak-ng-data directory (linked or copied from an installed catalog voice).
-// Prepare adds both the first time a voice is loaded, so a user only ever drops in two files.
+// writes), an espeak-ng-data directory (linked or copied from an installed catalog voice), and
+// ONNX metadata (sample_rate, model_type…) that sherpa's conversion script adds to the model.
+// Prepare builds all three in a <name>\sherpa\ subfolder the first time a voice is loaded — the
+// user's own <name>.onnx is never touched, since the same file is dropped as-is into other Piper
+// hosts — so a user only ever drops in two files.
 package localvoices
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +23,11 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
+
+// SherpaDir is the subfolder of a voice that Prepare builds and engine.NewPiperTTS loads.
+const SherpaDir = "sherpa"
 
 // IDPrefix marks a local voice in cfg.TTSVoice: "local:<name>".
 const IDPrefix = "local:"
@@ -31,7 +39,7 @@ type Voice struct {
 	Name  string `json:"name"`  // folder and file stem
 	ID    string `json:"id"`    // "local:<name>", what the voice picker sends
 	Label string `json:"label"` // display name: the json's "dataset" (or the name), title-cased
-	Dir   string `json:"-"`     // the voice folder, what engine.NewPiperTTS loads
+	Dir   string `json:"-"`     // the voice folder holding the user's two files (Prepare returns Dir\sherpa)
 }
 
 // ID returns the config id for a voice name; Name is its inverse (ok=false for other ids).
@@ -146,10 +154,11 @@ func titleCase(s string) string {
 	return strings.Join(words, " ")
 }
 
-// Prepare makes root\<name>\ loadable by sherpa-onnx's vits-piper loader and returns the folder:
-// tokens.txt is written from the json when missing, and espeak-ng-data is linked to (or, if the
-// link cannot be made, copied from) espeakDataDir when missing. Existing files are left alone, so
-// a user who ships their own tokens.txt keeps it.
+// Prepare builds root\<name>\sherpa\ — what sherpa-onnx's vits-piper loader needs — and returns
+// that folder: a copy of <name>.onnx with sherpa's metadata appended, tokens.txt from the json,
+// and espeak-ng-data linked to (or, if the link cannot be made, copied from) espeakDataDir. The
+// copy and tokens.txt are rebuilt when the user's files are newer than them, otherwise reused;
+// espeak-ng-data is only added when missing.
 func Prepare(root, name, espeakDataDir string) (string, error) {
 	v, ok := Get(root, name)
 	if !ok {
@@ -158,13 +167,24 @@ func Prepare(root, name, espeakDataDir string) (string, error) {
 		}
 		return "", fmt.Errorf("local voice %q: %s.onnx and %s.onnx.json not found in %s", name, name, name, filepath.Join(root, name))
 	}
-	tokens := filepath.Join(v.Dir, "tokens.txt")
-	if !isFile(tokens) {
-		if err := writeTokens(jsonPath(v.Dir, v.Name), tokens); err != nil {
+	src, meta := modelPath(v.Dir, v.Name), jsonPath(v.Dir, v.Name)
+	out := filepath.Join(v.Dir, SherpaDir)
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		return "", err
+	}
+	model := filepath.Join(out, v.Name+".onnx")
+	if stale(model, src, meta) {
+		if err := writeModel(src, meta, model); err != nil {
+			return "", fmt.Errorf("local voice %q: %s: %w", name, filepath.Base(model), err)
+		}
+	}
+	tokens := filepath.Join(out, "tokens.txt")
+	if stale(tokens, meta) {
+		if err := writeTokens(meta, tokens); err != nil {
 			return "", fmt.Errorf("local voice %q: tokens.txt: %w", name, err)
 		}
 	}
-	data := filepath.Join(v.Dir, "espeak-ng-data")
+	data := filepath.Join(out, "espeak-ng-data")
 	if !isDir(data) {
 		if !isDir(espeakDataDir) {
 			return "", fmt.Errorf("local voice %q: no espeak-ng-data to borrow (%s is not a directory)", name, espeakDataDir)
@@ -178,30 +198,147 @@ func Prepare(root, name, espeakDataDir string) (string, error) {
 			}
 		}
 	}
-	return v.Dir, nil
+	return out, nil
+}
+
+// stale reports whether a generated file is missing or older than any of its sources.
+func stale(generated string, sources ...string) bool {
+	g, err := os.Stat(generated)
+	if err != nil {
+		return true
+	}
+	for _, s := range sources {
+		if fi, err := os.Stat(s); err != nil || fi.ModTime().After(g.ModTime()) {
+			return true
+		}
+	}
+	return false
+}
+
+// piperMeta is the part of <name>.onnx.json sherpa's metadata comes from.
+type piperMeta struct {
+	Audio struct {
+		SampleRate int `json:"sample_rate"`
+	} `json:"audio"`
+	Espeak struct {
+		Voice string `json:"voice"`
+	} `json:"espeak"`
+	Language struct {
+		NameEnglish string `json:"name_english"`
+	} `json:"language"`
+	NumSpeakers  int              `json:"num_speakers"`
+	PhonemeIDMap map[string][]int `json:"phoneme_id_map"`
+}
+
+func readMeta(jsonFile string) (piperMeta, error) {
+	var m piperMeta
+	b, err := os.ReadFile(jsonFile)
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return m, fmt.Errorf("parse %s: %w", filepath.Base(jsonFile), err)
+	}
+	return m, nil
+}
+
+// metadataProps returns the key/value pairs sherpa-onnx's piper converter (scripts/piper's
+// add_meta_data.py) stores in the model — the loader refuses a model without sample_rate — in the
+// order and with the defaults that script uses.
+func metadataProps(m piperMeta) [][2]string {
+	lang, voice, speakers := m.Language.NameEnglish, m.Espeak.Voice, m.NumSpeakers
+	if lang == "" {
+		lang = "English"
+	}
+	if voice == "" {
+		voice = "en-us"
+	}
+	if speakers <= 0 {
+		speakers = 1
+	}
+	return [][2]string{
+		{"model_type", "vits"},
+		{"comment", "piper"},
+		{"language", lang},
+		{"voice", voice},
+		{"has_espeak", "1"},
+		{"n_speakers", fmt.Sprint(speakers)},
+		{"sample_rate", fmt.Sprint(m.Audio.SampleRate)},
+	}
+}
+
+// encodeMetadata serializes entries as ModelProto.metadata_props (field 14, a repeated
+// StringStringEntryProto{key = 1, value = 2}). Protobuf lets a repeated field appear anywhere
+// in a message, so these bytes can simply be appended to an existing .onnx file — no ONNX
+// library needed, and the 60 MB of weights are copied, not parsed.
+func encodeMetadata(entries [][2]string) []byte {
+	var out []byte
+	for _, e := range entries {
+		entry := append(append([]byte{0x0A}, uvarint(len(e[0]))...), e[0]...)
+		entry = append(append(append(entry, 0x12), uvarint(len(e[1]))...), e[1]...)
+		out = append(append(append(out, 0x72), uvarint(len(entry))...), entry...)
+	}
+	return out
+}
+
+func uvarint(n int) []byte { return binary.AppendUvarint(nil, uint64(n)) }
+
+// writeModel copies the user's .onnx to dst with sherpa's metadata appended, atomically.
+func writeModel(src, jsonFile, dst string) error {
+	m, err := readMeta(jsonFile)
+	if err != nil {
+		return err
+	}
+	if m.Audio.SampleRate <= 0 {
+		return fmt.Errorf("%s has no audio.sample_rate", filepath.Base(jsonFile))
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if _, err := out.Write(encodeMetadata(metadataProps(m))); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	os.Remove(dst) // Windows rename won't replace an open or existing file reliably
+	return os.Rename(tmp, dst)
 }
 
 // writeTokens emits the tokens.txt sherpa-onnx's piper converter (scripts/piper) produces from
 // a Piper json: one "<phoneme> <id>" line per phoneme_id_map entry, first id only, sorted by
 // phoneme. The pad "_", bos "^", eos "$" and the space phoneme (a line starting with a space) are
 // ordinary entries; sherpa's token reader handles the leading-space line itself.
+//
+// Only single-codepoint phonemes are written: sherpa's lexicon reader rejects a longer token
+// ("size: 2"), and the newer piper1-gpl trainer adds diphthongs (aɪ, eɪ, …) to its map that
+// sherpa phonemizes as two codepoints anyway, so they are never looked up.
 func writeTokens(jsonFile, dst string) error {
-	b, err := os.ReadFile(jsonFile)
+	meta, err := readMeta(jsonFile)
 	if err != nil {
 		return err
-	}
-	var meta struct {
-		PhonemeIDMap map[string][]int `json:"phoneme_id_map"`
-	}
-	if err := json.Unmarshal(b, &meta); err != nil {
-		return fmt.Errorf("parse %s: %w", filepath.Base(jsonFile), err)
 	}
 	if len(meta.PhonemeIDMap) == 0 {
 		return fmt.Errorf("%s has no phoneme_id_map", filepath.Base(jsonFile))
 	}
 	lines := make([]string, 0, len(meta.PhonemeIDMap))
 	for ph, ids := range meta.PhonemeIDMap {
-		if len(ids) == 0 {
+		if len(ids) == 0 || utf8.RuneCountInString(ph) != 1 {
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("%s %d", ph, ids[0]))

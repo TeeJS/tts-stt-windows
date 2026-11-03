@@ -1,23 +1,79 @@
 package localvoices
 
 import (
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeJSON mimics the parts of a Piper <name>.onnx.json that matter here: the speaker name and a
 // phoneme_id_map whose values are lists (Piper allows several ids per phoneme; sherpa takes the
 // first). Includes the pad/bos/eos entries and the space phoneme.
+// "aɪ" is a diphthong the piper1-gpl trainer adds: two codepoints, which sherpa's token reader
+// rejects, so it must be left out of tokens.txt.
 const fakeJSON = `{
   "dataset": "my_voice",
   "audio": {"sample_rate": 22050},
+  "espeak": {"voice": "en-gb-x-rp"},
+  "language": {"name_english": "English"},
+  "num_speakers": 2,
   "phoneme_id_map": {
-    "_": [0], "^": [1], "$": [2], " ": [3], "!": [4], "a": [10, 99], "ɑ": [11], "ʃ": [20]
+    "_": [0], "^": [1], "$": [2], " ": [3], "!": [4], "a": [10, 99], "ɑ": [11], "ʃ": [20], "aɪ": [161]
   }
 }`
+
+// fakeONNX is a minimal but valid ModelProto: ir_version (field 1, varint) = 7 and
+// producer_name (field 2, string) = "test". Prepare appends metadata_props after it.
+var fakeONNX = []byte{0x08, 0x07, 0x12, 0x04, 't', 'e', 's', 't'}
+
+// metadataIn decodes a serialized ModelProto's top-level fields and returns its metadata_props
+// (field 14) as key/value pairs, plus the other field numbers seen — enough to prove the
+// appended bytes are well-formed protobuf that leaves the original fields intact.
+func metadataIn(t *testing.T, b []byte) (props [][2]string, fields []int) {
+	t.Helper()
+	readField := func(b []byte) (field, wire int, payload []byte, rest []byte) {
+		tag, n := binary.Uvarint(b)
+		if n <= 0 {
+			t.Fatalf("bad tag at %d bytes from end", len(b))
+		}
+		b = b[n:]
+		field, wire = int(tag>>3), int(tag&7)
+		switch wire {
+		case 0:
+			_, n := binary.Uvarint(b)
+			return field, wire, b[:n], b[n:]
+		case 2:
+			l, n := binary.Uvarint(b)
+			b = b[n:]
+			return field, wire, b[:l], b[l:]
+		}
+		t.Fatalf("unexpected wire type %d", wire)
+		return
+	}
+	for len(b) > 0 {
+		var field, wire int
+		var payload []byte
+		field, wire, payload, b = readField(b)
+		fields = append(fields, field)
+		if field != 14 || wire != 2 {
+			continue
+		}
+		var kv [2]string
+		for len(payload) > 0 {
+			var f int
+			var p []byte
+			f, _, p, payload = readField(payload)
+			kv[f-1] = string(p)
+		}
+		props = append(props, kv)
+	}
+	return props, fields
+}
 
 // addVoice creates root\<name>\ with the two Piper files.
 func addVoice(t *testing.T, root, name, meta string) string {
@@ -26,7 +82,7 @@ func addVoice(t *testing.T, root, name, meta string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, name+".onnx"), []byte("not really onnx"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name+".onnx"), fakeONNX, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, name+".onnx.json"), []byte(meta), 0o644); err != nil {
@@ -116,7 +172,7 @@ func TestNameSafety(t *testing.T) {
 	}
 }
 
-func TestPrepareWritesTokensAndCopiesEspeak(t *testing.T) {
+func TestPrepareBuildsSherpaFolder(t *testing.T) {
 	root := t.TempDir()
 	dir := addVoice(t, root, "mine", fakeJSON)
 	espeak := espeakDir(t)
@@ -125,39 +181,99 @@ func TestPrepareWritesTokensAndCopiesEspeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != dir {
-		t.Errorf("Prepare returned %q, want %q", got, dir)
+	out := filepath.Join(dir, SherpaDir)
+	if got != out {
+		t.Errorf("Prepare returned %q, want %q", got, out)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "tokens.txt"))
+	b, err := os.ReadFile(filepath.Join(out, "tokens.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// sherpa's converter layout: "<phoneme> <first id>", sorted by phoneme (bytewise), so the
-	// space phoneme comes first as a line that starts with a space.
+	// space phoneme comes first as a line that starts with a space. No "aɪ" line.
 	want := "  3\n! 4\n$ 2\n^ 1\n_ 0\na 10\nɑ 11\nʃ 20\n"
 	if string(b) != want {
 		t.Errorf("tokens.txt =\n%q\nwant\n%q", b, want)
 	}
 	// espeak-ng-data is present as a link or a copy — either way the nested file is reachable.
-	if _, err := os.Stat(filepath.Join(dir, "espeak-ng-data", "lang", "en")); err != nil {
+	if _, err := os.Stat(filepath.Join(out, "espeak-ng-data", "lang", "en")); err != nil {
 		t.Errorf("espeak-ng-data not usable: %v", err)
 	}
+	// The user's model is untouched; the copy is the original plus sherpa's metadata.
+	if orig, _ := os.ReadFile(filepath.Join(dir, "mine.onnx")); string(orig) != string(fakeONNX) {
+		t.Error("Prepare modified the user's .onnx")
+	}
+	model, err := os.ReadFile(filepath.Join(out, "mine.onnx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(model[:len(fakeONNX)]) != string(fakeONNX) {
+		t.Error("copied model does not start with the original bytes")
+	}
+	props, fields := metadataIn(t, model)
+	wantProps := [][2]string{
+		{"model_type", "vits"}, {"comment", "piper"}, {"language", "English"}, {"voice", "en-gb-x-rp"},
+		{"has_espeak", "1"}, {"n_speakers", "2"}, {"sample_rate", "22050"},
+	}
+	if !reflect.DeepEqual(props, wantProps) {
+		t.Errorf("metadata_props = %v, want %v", props, wantProps)
+	}
+	if !reflect.DeepEqual(fields[:2], []int{1, 2}) {
+		t.Errorf("original fields not preserved: %v", fields)
+	}
 
-	// Second call is a no-op: a hand-edited tokens.txt must survive.
-	os.WriteFile(filepath.Join(dir, "tokens.txt"), []byte("custom\n"), 0o644)
+	// Unchanged sources: a second call reuses the folder (same mtime on the copy).
+	fi1, _ := os.Stat(filepath.Join(out, "mine.onnx"))
 	if _, err := Prepare(root, "mine", "does-not-exist"); err != nil {
 		t.Fatalf("second Prepare: %v", err)
 	}
-	if b, _ := os.ReadFile(filepath.Join(dir, "tokens.txt")); string(b) != "custom\n" {
-		t.Error("Prepare overwrote an existing tokens.txt")
+	fi2, _ := os.Stat(filepath.Join(out, "mine.onnx"))
+	if !fi1.ModTime().Equal(fi2.ModTime()) {
+		t.Error("Prepare rebuilt the model copy although nothing changed")
+	}
+
+	// A newer source .onnx (the user re-exported) must be picked up.
+	future := time.Now().Add(time.Hour)
+	os.WriteFile(filepath.Join(dir, "mine.onnx"), append(fakeONNX, 0x12, 0x01, 'v'), 0o644)
+	os.Chtimes(filepath.Join(dir, "mine.onnx"), future, future)
+	if _, err := Prepare(root, "mine", "does-not-exist"); err != nil {
+		t.Fatalf("third Prepare: %v", err)
+	}
+	model, _ = os.ReadFile(filepath.Join(out, "mine.onnx"))
+	if len(model) != len(fakeONNX)+3+len(encodeMetadata(wantProps)) {
+		t.Errorf("model copy not rebuilt from the newer source: %d bytes", len(model))
+	}
+}
+
+func TestEncodeMetadataDefaults(t *testing.T) {
+	// A raw piper1-gpl export has no language block and may omit espeak.voice / num_speakers.
+	var m piperMeta
+	m.Audio.SampleRate = 16000
+	b := encodeMetadata(metadataProps(m))
+	props, _ := metadataIn(t, b)
+	want := [][2]string{
+		{"model_type", "vits"}, {"comment", "piper"}, {"language", "English"}, {"voice", "en-us"},
+		{"has_espeak", "1"}, {"n_speakers", "1"}, {"sample_rate", "16000"},
+	}
+	if !reflect.DeepEqual(props, want) {
+		t.Errorf("props = %v, want %v", props, want)
+	}
+	// Byte-level check of one entry: tag 0x72, length, then key/value sub-fields.
+	one := encodeMetadata([][2]string{{"k", "vv"}})
+	if string(one) != string([]byte{0x72, 7, 0x0A, 1, 'k', 0x12, 2, 'v', 'v'}) {
+		t.Errorf("encoding = % x", one)
 	}
 }
 
 func TestPrepareErrors(t *testing.T) {
 	root := t.TempDir()
-	addVoice(t, root, "nomap", `{"dataset": "x"}`)
+	addVoice(t, root, "nomap", `{"dataset": "x", "audio": {"sample_rate": 22050}}`)
 	if _, err := Prepare(root, "nomap", espeakDir(t)); err == nil || !strings.Contains(err.Error(), "phoneme_id_map") {
 		t.Errorf("json without phoneme_id_map: err = %v", err)
+	}
+	addVoice(t, root, "norate", `{"phoneme_id_map": {"_": [0]}}`)
+	if _, err := Prepare(root, "norate", espeakDir(t)); err == nil || !strings.Contains(err.Error(), "sample_rate") {
+		t.Errorf("json without audio.sample_rate: err = %v", err)
 	}
 	addVoice(t, root, "noespeak", fakeJSON)
 	if _, err := Prepare(root, "noespeak", filepath.Join(root, "absent")); err == nil {
